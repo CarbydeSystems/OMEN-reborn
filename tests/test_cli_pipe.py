@@ -81,6 +81,37 @@ def test_eval_cli(model_dir: Path) -> None:
     assert "123456\tlevel=" in out
 
 
+def test_eval_rank_matches_with_and_without_native(
+    model_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`eval --rank` must agree exactly whether or not native/omen-rank is used.
+
+    Runs the same in-process call twice: once with `_find_omen_rank`
+    monkeypatched to None (forces the pure-Python fallback), once unpatched
+    (uses the native binary when native/omen-rank has been built, same as
+    any normal invocation) — proving the native wiring is a speed change
+    only, never a behaviour change.
+    """
+    import omen.cli as cli_module
+
+    passwords = ["password", "123456", "doesnotexistinthissample12345"]
+    argv = ["eval", "-m", str(model_dir), "--rank", *passwords]
+
+    monkeypatch.setattr(cli_module, "_find_omen_rank", lambda: None)
+    assert cli_module.main(argv) == 0
+    fallback_out = capsys.readouterr().out
+    monkeypatch.undo()
+
+    assert cli_module.main(argv) == 0
+    native_or_fallback_out = capsys.readouterr().out
+
+    # Same rank>=N for every password regardless of which path computed it —
+    # the whole point of the native tool being a drop-in, not an approximation.
+    # (Equal even when native/omen-rank isn't built: both calls then take the
+    # same fallback path, which is still a meaningful — if weaker — check.)
+    assert fallback_out == native_or_fallback_out
+
+
 def test_inspect_cli(model_dir: Path) -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "omen", "inspect", "-m", str(model_dir)],
