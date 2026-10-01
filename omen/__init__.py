@@ -15,6 +15,13 @@ from omen.enumerate import Enumerator, PyEnumerator
 from omen.errors import ConfigError, ModelError, OmenError, TrainingError
 from omen.levels import LevelScale
 from omen.model import NgramModel
+from omen.profiles import (
+    PROFILES,
+    LanguageProfile,
+    alphabet_warnings,
+    available_profiles,
+    floor_chars,
+)
 from omen.score import PasswordScore, PasswordScorer
 from omen.spool import ChunkSpooler, HashcatRunner, SpoolConfig, SpoolResult, run_spool
 from omen.train import ModelTrainer, TrainingOptions
@@ -22,12 +29,14 @@ from omen.train import ModelTrainer, TrainingOptions
 __version__ = "0.1.0"
 
 __all__ = [
+    "PROFILES",
     "Alphabet",
     "AlphabetSelection",
     "ChunkSpooler",
     "ConfigError",
     "Enumerator",
     "HashcatRunner",
+    "LanguageProfile",
     "LevelScale",
     "ModelError",
     "ModelTrainer",
@@ -41,6 +50,9 @@ __all__ = [
     "TrainingError",
     "TrainingOptions",
     "__version__",
+    "alphabet_warnings",
+    "available_profiles",
+    "floor_chars",
     "run_spool",
     "select_alphabet",
 ]

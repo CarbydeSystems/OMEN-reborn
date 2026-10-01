@@ -32,6 +32,7 @@ from omen.errors import OmenError
 from omen.inspect import ModelInspector
 from omen.io_utils import ByteSink, read_corpus
 from omen.model import NgramModel
+from omen.profiles import alphabet_warnings, available_profiles, floor_chars
 from omen.score import PasswordScorer
 from omen.spool import CHUNK_PLACEHOLDER, SpoolConfig, run_spool
 from omen.train import ModelTrainer, TrainingOptions
@@ -99,6 +100,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="number of most-frequent chars to auto-select (default: 72)",
     )
     p_train.add_argument(
+        "--profile",
+        choices=available_profiles(),
+        default=None,
+        help="reserve a language's floor characters before frequency-ranking "
+        "the remainder (mutually exclusive with --alphabet); see omen alphabet "
+        "--profile to preview one",
+    )
+    p_train.add_argument(
         "--no-ep", action="store_true", help="disable the word-ending (EP) component"
     )
     p_train.set_defaults(handler=_cmd_train)
@@ -124,6 +133,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_alpha = sub.add_parser("alphabet", help="select and report an alphabet from a corpus")
     p_alpha.add_argument("-i", "--input", required=True, help="corpus path, or '-' for stdin")
     p_alpha.add_argument("--size", type=int, default=72, help="alphabet size (default: 72)")
+    p_alpha.add_argument(
+        "--profile",
+        choices=available_profiles(),
+        default=None,
+        help="preview with a language's floor characters reserved first",
+    )
     p_alpha.set_defaults(handler=_cmd_alphabet)
 
     p_inspect = sub.add_parser("inspect", help="print model metadata and histograms")
@@ -170,6 +185,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         max_length=args.max_length,
         alphabet=args.alphabet,
         alphabet_size=args.alphabet_size,
+        profile=args.profile,
         ep_enabled=not args.no_ep,
     )
     if args.supplement and args.input == "-" and args.supplement == "-":
@@ -185,6 +201,15 @@ def _cmd_train(args: argparse.Namespace) -> int:
         f"lam={model.scale.lam:.4g})",
         file=sys.stderr,
     )
+    if model.alphabet_size < args.alphabet_size and args.alphabet is None:
+        print(
+            f"omen: warning: alphabet has only {model.alphabet_size} characters "
+            f"(requested {args.alphabet_size}) — the corpus doesn't contain that "
+            "many distinct characters",
+            file=sys.stderr,
+        )
+    for warning in alphabet_warnings(model.alphabet.chars, model.profile):
+        print(f"omen: warning: {warning}", file=sys.stderr)
     return 0
 
 
@@ -275,13 +300,23 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_alphabet(args: argparse.Namespace) -> int:
+    floor = floor_chars(args.profile) if args.profile else ()
     with read_corpus(args.input) as passwords:
-        selection = select_alphabet(passwords, args.size)
+        selection = select_alphabet(passwords, args.size, floor=floor)
     print(f"size      : {selection.alphabet.size}")
     print(f"coverage  : {selection.coverage:.4%}")
     print(f"distinct  : {selection.distinct_chars}")
     print(f"total     : {selection.total_chars}")
+    print(f"profile   : {args.profile if args.profile else '(none — pure frequency)'}")
     print(f"alphabet  : {selection.alphabet.as_string()}")
+    if selection.alphabet.size < args.size:
+        print(
+            f"warning   : alphabet has only {selection.alphabet.size} characters "
+            f"(requested {args.size}) — the corpus doesn't contain that many "
+            "distinct characters"
+        )
+    for warning in alphabet_warnings(selection.alphabet.chars, args.profile):
+        print(f"warning   : {warning}")
     return 0
 
 

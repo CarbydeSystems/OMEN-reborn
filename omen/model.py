@@ -79,6 +79,7 @@ class NgramModel:
         "ln_levels",
         "max_length",
         "ngram",
+        "profile",
         "scale",
         "smoothing",
     )
@@ -97,6 +98,7 @@ class NgramModel:
         ep_enabled: bool,
         ln_levels: Sequence[int],
         coverage: float,
+        profile: str | None = None,
     ) -> None:
         if ngram < 2:
             raise ConfigError(f"ngram must be >= 2, got {ngram}")
@@ -110,6 +112,7 @@ class NgramModel:
         self.max_length = max_length
         self.ep_enabled = ep_enabled
         self.coverage = coverage
+        self.profile = profile
 
         self._a = alphabet.size
         self.context_len = ngram - 1
@@ -222,6 +225,7 @@ class NgramModel:
             "ep_enabled": self.ep_enabled,
             "ln_levels": list(self.ln_levels),
             "coverage": self.coverage,
+            "profile": self.profile,
         }
         (path / CONFIG_NAME).write_text(json.dumps(config, indent=2), encoding="utf-8")
         (path / IP_NAME).write_bytes(self.ip_levels)
@@ -283,6 +287,10 @@ class NgramModel:
         ln_raw = raw.get("ln_levels")
         if not isinstance(ln_raw, list) or not all(isinstance(x, int) for x in ln_raw):
             raise ConfigError("ln_levels must be a list of integers")
+        # Optional: absent entirely in models saved before profile support existed.
+        profile = raw.get("profile")
+        if profile is not None and not isinstance(profile, str):
+            raise ConfigError("config field 'profile' must be a string or null")
 
         alphabet = Alphabet.from_chars(alphabet_str)
         scale = LevelScale(levels=levels, lam=lam)  # validates levels/lam ranges
@@ -305,6 +313,7 @@ class NgramModel:
             ep_enabled=ep_enabled,
             ln_levels=ln_raw,
             coverage=coverage,
+            profile=profile,
         )
 
 
