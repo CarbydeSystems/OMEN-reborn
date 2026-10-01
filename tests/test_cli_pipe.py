@@ -124,6 +124,95 @@ def test_inspect_cli(model_dir: Path) -> None:
     assert "OMEN model" in proc.stdout.decode("utf-8")
 
 
+def test_train_with_profile_cli(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("passwort\nschluessel\ngeheim\n" * 5, encoding="utf-8")
+    out = tmp_path / "model"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen",
+            "train",
+            "-i",
+            str(corpus),
+            "-m",
+            str(out),
+            "--max-length",
+            "12",
+            "--profile",
+            "de",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    inspect_proc = subprocess.run(
+        [sys.executable, "-m", "omen", "inspect", "-m", str(out)],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    report = inspect_proc.stdout.decode("utf-8")
+    assert "alphabet profile : de" in report
+    # German floor letters must be present regardless of corpus frequency.
+    assert "ß" in report and "ü" in report
+
+
+def test_alphabet_cli_with_profile_preview() -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen",
+            "alphabet",
+            "-i",
+            str(SAMPLE),
+            "--profile",
+            "es",
+            "--size",
+            "90",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    out = proc.stdout.decode("utf-8")
+    assert "profile   : es" in out
+    assert "ñ" in out  # Spanish floor letter, guaranteed regardless of corpus
+
+
+def test_train_rejects_profile_and_alphabet_together(tmp_path: Path) -> None:
+    out = tmp_path / "model"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen",
+            "train",
+            "-i",
+            str(SAMPLE),
+            "-m",
+            str(out),
+            "--profile",
+            "de",
+            "--alphabet",
+            "abc",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode != 0
+    assert "mutually exclusive" in proc.stderr.decode("utf-8")
+
+
 def test_train_supplement_influences_alphabet(tmp_path: Path) -> None:
     """A supplement file mixes into the corpus and affects auto-alphabet selection."""
     from omen.cli import main
@@ -211,3 +300,48 @@ def test_alphabet_cli() -> None:
     )
     assert proc.returncode == 0
     assert "coverage" in proc.stdout.decode("utf-8")
+
+
+def test_alphabet_cli_warns_when_corpus_has_fewer_distinct_chars_than_requested() -> None:
+    """The original incident this whole feature set traces back to: a small
+    corpus asked for more alphabet slots than it has distinct characters."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "omen", "alphabet", "-i", str(SAMPLE), "--size", "200"],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    out = proc.stdout.decode("utf-8")
+    assert "warning" in out
+    assert "requested 200" in out
+
+
+def test_train_cli_warns_when_corpus_has_fewer_distinct_chars_than_requested(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "model"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen",
+            "train",
+            "-i",
+            str(SAMPLE),
+            "-m",
+            str(out),
+            "--max-length",
+            "16",
+            "--alphabet-size",
+            "200",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    stderr = proc.stderr.decode("utf-8")
+    assert "requested 200" in stderr

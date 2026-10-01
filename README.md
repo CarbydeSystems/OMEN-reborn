@@ -85,7 +85,8 @@ omen eval -m model/ Password1 hunter2 --rank
 omen inspect -m model/
 
 # 5. Choose / preview an alphabet from a corpus
-omen alphabet -i cracked.txt --size 72
+#    --profile reserves a language's floor characters first (see below)
+omen alphabet -i cracked.txt --size 72 --profile de
 ```
 
 ### Commands
@@ -115,12 +116,66 @@ in level. A single `LevelScale` is shared by all tables so the components are
 additive and comparable. `omen eval` recomputes this exact value, so a
 password's score always equals the level the generator would emit it at.
 
+## Language profiles
+
+`omen train` picks the alphabet's characters by corpus frequency. On a small
+or noisy corpus, this can drop a base letter of the target language. A real
+case: a 72-character English alphabet lost uppercase `Q`, `J`, and `X`. One
+Japanese character in the training data was slightly more frequent, so it
+took a letter's place. Every password with that letter became unrankable —
+not ranked low, excluded completely.
+
+A language profile stops this. It reserves a floor: a set of characters that
+always get a place in the alphabet, no matter how often they appear in the
+corpus. Use `--profile` on `train` or `alphabet`:
+
+```bash
+omen train -i cracked.txt -m model/ --profile de --alphabet-size 72
+omen alphabet -i cracked.txt --profile es   # preview only, no training
+```
+
+Every profile's floor starts with the 62-character Latin base (`a-z A-Z
+0-9`). Most profiles add a small set of their own letters on top — German
+adds `ä ö ü ß` and their capitals, French adds `é è ê ç` and more, and so on
+for 14 languages. Four profiles (`ru`, `bg`, `el`, `el-polytonic`) add a full
+second alphabet instead of a few letters — Cyrillic or Greek. Their floor is
+larger than the default `--alphabet-size` of 72, on purpose: if you request
+one of these profiles at the default size, `train` stops with a clear error
+and tells you the size to use instead. This is correct behaviour, not a bug
+to work around — a Cyrillic password needs room for Cyrillic letters.
+
+The floor data comes from hashcat's own `charsets/combined/*.hcchr` files —
+character sets already used across the password-cracking community. `omen`
+does not read these files. The letters are copied once into
+`omen/profiles.py`, so `omen` has no dependency on hashcat being installed.
+
+`train` and `alphabet` both print a warning when something still looks
+wrong, whether or not you gave a profile:
+
+- **Always**: a warning if the corpus has fewer distinct characters than
+  `--alphabet-size`/`--size` asked for — the alphabet comes out smaller than
+  requested, silently, unless something says so.
+- **With a profile**: a warning if any floor letter did not make it into the
+  alphabet (should not happen through normal training — a safety check for
+  an alphabet built another way), or if a trained character falls outside
+  the profile's own script.
+- **Without a profile**: `omen` finds the alphabet's own most common script
+  and warns about any character outside it. This is the check that would
+  have caught the real `Q`/`J`/`X` case above, even with no profile named at
+  all.
+
+`omen inspect` prints the same two checks for any saved model, including one
+trained in an earlier session — the model file remembers which profile (if
+any) was used.
+
 ## Model format
 
 A model is a directory:
 
-- `config.json` — version, `ngram`, `levels`, `lam`, smoothing, alphabet, length
-  levels, coverage. **Fully validated before any table is allocated.**
+- `config.json` — version, `ngram`, `levels`, `lam`, smoothing, alphabet,
+  length levels, coverage, profile (the language profile used, or `null`
+  for none — see [Language profiles](#language-profiles)). **Fully validated
+  before any table is allocated.**
 - `ip.dat`, `cp.dat`, `ep.dat` — flat one-byte-per-entry level tables, indexed
   by packed alphabet codes (the native enumerator `mmap`s them directly).
 - `manifest.bin` — fixed-layout little-endian header (ngram, levels, `lam`,
@@ -144,6 +199,7 @@ characters) and prefer `n=3` or `n=4` for most use cases.
 | Module          | Responsibility                                               |
 |-----------------|--------------------------------------------------------------|
 | `alphabet.py`   | `Alphabet` value object + frequency-based `select_alphabet`. |
+| `profiles.py`   | Language floors, script detection, alphabet warnings.        |
 | `levels.py`     | `LevelScale` — probability ↔ level mapping.                  |
 | `model.py`      | `NgramModel` — tables, queries, validated save/load.         |
 | `train.py`      | `ModelTrainer` — corpus → counts → smoothing → tables.       |

@@ -26,6 +26,7 @@ from omen.alphabet import Alphabet, select_alphabet
 from omen.errors import TrainingError
 from omen.levels import LevelScale
 from omen.model import MAX_NGRAM, MAX_PASSWORD_LENGTH, NgramModel, checked_pow
+from omen.profiles import PROFILES, available_profiles, floor_chars
 
 CorpusFactory = Callable[[], Iterable[str]]
 
@@ -34,8 +35,11 @@ CorpusFactory = Callable[[], Iterable[str]]
 class TrainingOptions:
     """User-facing knobs for training.
 
-    ``alphabet`` overrides automatic selection; when ``None`` the ``alphabet_size``
-    most frequent characters are chosen from the corpus.
+    ``alphabet`` overrides automatic selection entirely; when ``None``, up to
+    ``alphabet_size`` characters are chosen from the corpus by frequency,
+    reserving a floor for ``profile`` first (see :mod:`omen.profiles`) when
+    one is given — ``profile`` and ``alphabet`` are mutually exclusive, since
+    an explicit alphabet already fully determines the charset.
     """
 
     ngram: int = 3
@@ -44,6 +48,7 @@ class TrainingOptions:
     max_length: int = 20
     alphabet: str | None = None
     alphabet_size: int = 72
+    profile: str | None = None
     ep_enabled: bool = True
 
     def validate(self) -> None:
@@ -60,6 +65,14 @@ class TrainingOptions:
             )
         if self.alphabet_size < 1:
             raise TrainingError(f"alphabet_size must be >= 1, got {self.alphabet_size}")
+        if self.profile is not None:
+            if self.alphabet is not None:
+                raise TrainingError("profile and alphabet are mutually exclusive")
+            if self.profile not in PROFILES:
+                raise TrainingError(
+                    f"unknown profile {self.profile!r}; available: "
+                    f"{', '.join(available_profiles())}"
+                )
 
 
 class ModelTrainer:
@@ -91,7 +104,8 @@ class ModelTrainer:
     def _resolve_alphabet(self, corpus_factory: CorpusFactory) -> Alphabet:
         if self._opt.alphabet is not None:
             return Alphabet.from_chars(self._opt.alphabet)
-        selection = select_alphabet(corpus_factory(), self._opt.alphabet_size)
+        floor = floor_chars(self._opt.profile) if self._opt.profile else ()
+        selection = select_alphabet(corpus_factory(), self._opt.alphabet_size, floor=floor)
         return selection.alphabet
 
     def _build_model(self, alphabet: Alphabet, counts: _Counts) -> NgramModel:
@@ -121,6 +135,7 @@ class ModelTrainer:
             ep_enabled=ep_enabled,
             ln_levels=ln_levels,
             coverage=counts.coverage,
+            profile=opt.profile,
         )
 
     def _probability_floor(

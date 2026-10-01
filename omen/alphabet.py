@@ -111,17 +111,37 @@ class AlphabetSelection:
     distinct_chars: int
 
 
-def select_alphabet(passwords: Iterable[str], size: int) -> AlphabetSelection:
-    """Choose the ``size`` most frequent characters across ``passwords``.
+def select_alphabet(
+    passwords: Iterable[str], size: int, *, floor: Iterable[str] = ()
+) -> AlphabetSelection:
+    """Choose ``size`` characters across ``passwords``: a reserved floor first,
+    the remainder by frequency.
 
-    Ties are broken by Unicode code point so the result is deterministic.  The
-    returned coverage is the share of all observed characters that the selected
-    alphabet retains — a quick signal for whether ``size`` is large enough.
+    ``floor`` (typically a language profile's :func:`~omen.profiles.floor_chars`)
+    is included unconditionally — even a character with zero occurrences in the
+    corpus still gets a slot, so it remains representable rather than silently
+    excluded. The remaining ``size - len(floor)`` slots are filled by frequency
+    from the corpus characters *not* already in the floor, same tie-break
+    (descending count, then ascending code point) as when ``floor`` is empty —
+    which is the original, unconstrained "top `size` by global frequency"
+    behaviour this parameter is additive to.
+
+    Raises :class:`TrainingError` if ``floor`` alone has more distinct
+    characters than ``size`` — raise ``size`` rather than silently dropping
+    floor characters, which would reintroduce the exact bug a floor exists to
+    prevent.
     """
     if size < 1:
         raise TrainingError("alphabet size must be at least 1")
     if size > MAX_ALPHABET_SIZE:
         raise TrainingError(f"alphabet size {size} exceeds maximum {MAX_ALPHABET_SIZE}")
+
+    floor_set = frozenset(floor)
+    if len(floor_set) > size:
+        raise TrainingError(
+            f"profile floor needs {len(floor_set)} characters but size is only "
+            f"{size} — raise --alphabet-size to at least {len(floor_set)}"
+        )
 
     counts: Counter[str] = Counter()
     for pw in passwords:
@@ -131,11 +151,14 @@ def select_alphabet(passwords: Iterable[str], size: int) -> AlphabetSelection:
     if total == 0:
         raise TrainingError("corpus contains no characters to build an alphabet from")
 
+    remaining_slots = size - len(floor_set)
     # Sort by descending frequency, then ascending code point for determinism.
-    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    chosen = ranked[:size]
-    alphabet = Alphabet.from_chars(ch for ch, _ in chosen)
-    retained = sum(count for _, count in chosen)
+    ranked = sorted(
+        ((ch, n) for ch, n in counts.items() if ch not in floor_set), key=lambda kv: (-kv[1], kv[0])
+    )
+    chosen = sorted(floor_set) + [ch for ch, _ in ranked[:remaining_slots]]
+    alphabet = Alphabet.from_chars(chosen)
+    retained = sum(counts.get(ch, 0) for ch in chosen)
     return AlphabetSelection(
         alphabet=alphabet,
         coverage=retained / total,

@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from omen.model import NgramModel
+from omen.profiles import alphabet_warnings
 
 
 class ModelInspector:
@@ -33,7 +34,11 @@ class ModelInspector:
         lines.append(f"  EP enabled       : {m.ep_enabled}")
         lines.append(f"  alphabet size    : {m.alphabet_size}")
         lines.append(f"  alphabet coverage: {m.coverage:.2%}")
+        profile_display = m.profile if m.profile else "(none — pure frequency)"
+        lines.append(f"  alphabet profile : {profile_display}")
         lines.append(f"  alphabet         : {self._render_alphabet()}")
+        for warning in alphabet_warnings(m.alphabet.chars, m.profile):
+            lines.append(f"  WARNING: {warning}")
         lines.append("")
         lines.append("Table sizes (entries)")
         lines.append("-" * 60)
