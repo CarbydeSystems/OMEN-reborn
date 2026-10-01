@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -200,11 +202,60 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_omen_rank() -> Path | None:
+    """Locate the native rank estimator: next to this repo's native/ dir first
+    (the usual case — built via `make -C native omen-rank`), else on PATH."""
+    candidate = Path(__file__).resolve().parent.parent / "native" / "omen-rank"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return candidate
+    found = shutil.which("omen-rank")
+    return Path(found) if found else None
+
+
+def _native_ranks(model_dir: str, passwords: list[str], cap: int) -> list[int | None] | None:
+    """Estimate every password's rank in one native/omen-rank call, in order.
+
+    Returns ``None`` (never partially) when the native binary is unavailable,
+    a password contains a newline (would desync the line-per-password
+    framing), or the subprocess itself fails — the caller falls back to the
+    pure-Python :meth:`PasswordScorer.estimate_rank` for every password in
+    that case, so this is a pure speed optimisation with no behaviour change
+    on the fallback path. A ``None`` entry within the returned list means
+    that password was UNREACHABLE (the caller already knows this from
+    :meth:`PasswordScorer.score` and never consults the entry).
+    """
+    binary = _find_omen_rank()
+    if binary is None or any("\n" in pw or "\r" in pw for pw in passwords):
+        return None
+    try:
+        proc = subprocess.run(
+            [str(binary), model_dir, "--rank-cap", str(cap), "-i", "-"],
+            input="\n".join(passwords) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = proc.stdout.splitlines()
+    if len(lines) != len(passwords):
+        return None  # defensive: misaligned output, don't guess which is which
+    ranks: list[int | None] = []
+    for line in lines:
+        if "\trank>=" in line:
+            ranks.append(int(line.rsplit("rank>=", 1)[1]))
+        else:
+            ranks.append(None)
+    return ranks
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     model = NgramModel.load(args.model)
     scorer = PasswordScorer(model)
     passwords = _eval_inputs(args)
-    for pw in passwords:
+    native_ranks = _native_ranks(args.model, passwords, args.rank_cap) if args.rank else None
+    for i, pw in enumerate(passwords):
         result = scorer.score(pw)
         if not result.in_model:
             print(f"{pw}\tUNREACHABLE\t({result.reason})")
@@ -214,7 +265,10 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             f"ip={result.ip_level} cp={result.cp_sum} ep={result.ep_level} ln={result.ln_level}"
         )
         if args.rank:
-            rank = scorer.estimate_rank(pw, cap=args.rank_cap)
+            if native_ranks is not None and native_ranks[i] is not None:
+                rank = native_ranks[i]
+            else:
+                rank = scorer.estimate_rank(pw, cap=args.rank_cap)
             line += f"\trank>={rank}"
         print(line)
     return 0

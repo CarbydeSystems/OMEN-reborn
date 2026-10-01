@@ -78,6 +78,7 @@ omen train -i cracked.txt -m model/ --supplement rockyou.txt --supplement-lines 
 omen generate -m model/ --max-guesses 5000000 | hashcat -a 0 -m 1000 hashes.txt
 
 # 3. Score individual passwords (clean replacement for evalPW)
+#    --rank uses native/omen-rank on its own once you build it (see below)
 omen eval -m model/ Password1 hunter2 --rank
 
 # 4. Inspect a trained model
@@ -178,6 +179,45 @@ pure-Python enumerator instead, invoked as `python -m omen generate …` (a bare
 `omen` shebang script is not directly executable on Windows; the `omen` console
 script exists only after `pip install`). Both enumerators emit byte-identical
 ordering, so a model trained once works with either.
+
+### Native C rank estimator (`native/omen-rank`)
+
+`omen eval --rank` finds a password's rank. The rank is the count of more
+probable candidates. `PasswordScorer.estimate_rank` finds this count in
+Python. This is slow for many passwords.
+
+`native/omen-rank` finds the same count in C. It is 50 to 100 times faster
+(`tests/test_native_rank_parity.py` checks that both tools agree). Build the
+tool once:
+
+```bash
+make -C native omen-rank
+```
+
+This command makes the file `native/omen-rank`.
+
+`eval --rank` uses this tool on its own after you build it. You do not need
+an extra flag. If the tool is missing, `eval` uses the Python path instead.
+Both paths give the same rank for the same password.
+
+You can also run the tool directly:
+
+```bash
+native/omen-rank model/ --rank-cap 10000000 Password1 hunter2
+```
+
+Use `-i FILE` to score many passwords in one run:
+
+```bash
+native/omen-rank model/ -i passwords.txt > ranks.txt
+```
+
+Use `-i -` to read passwords from stdin. The tool loads the model one time.
+It then scores every password in the same run.
+
+**Portability.** `omen-rank` works only on POSIX systems, the same as
+`omen-enum`. Use Linux or macOS. On Windows, `eval --rank` uses the Python
+path.
 
 ### Chunked spool-and-attack (`omen spool`)
 
