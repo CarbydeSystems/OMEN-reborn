@@ -9,6 +9,11 @@ endif
 omen-enum: omen_enum.c
 	$(CC) $(CFLAGS) -o omen-enum omen_enum.c
 
-.PHONY: clean
+omen-rank: omen_rank.c
+	$(CC) $(CFLAGS) -o omen-rank omen_rank.c
+
+all: omen-enum omen-rank
+
+.PHONY: all clean
 clean:
-	rm -f omen-enum
+	rm -f omen-enum omen-rank
