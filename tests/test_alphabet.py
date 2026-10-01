@@ -55,3 +55,54 @@ def test_select_alphabet_is_deterministic_on_ties() -> None:
 def test_select_alphabet_rejects_empty_corpus() -> None:
     with pytest.raises(TrainingError):
         select_alphabet([], size=4)
+
+
+# -- floor parameter (reserved-character profiles) --------------------------
+
+
+def test_floor_guarantees_inclusion_even_at_zero_count() -> None:
+    """A floor character absent from the corpus entirely still gets a slot."""
+    selection = select_alphabet(["aaaa", "aaab"], size=3, floor={"z"})
+    assert "z" in selection.alphabet.chars
+    assert selection.alphabet.size == 3
+
+
+def test_floor_is_excluded_from_frequency_competition() -> None:
+    """A floor character doesn't also consume a frequency-ranked remainder
+    slot — the remainder is filled entirely from non-floor characters."""
+    # 'a' is both floored and the most frequent char; size=2 leaves exactly
+    # one remainder slot, which should go to 'b' (next most frequent), not
+    # be wasted re-selecting 'a'.
+    selection = select_alphabet(["aaaa", "aaab", "aaac"], size=2, floor={"a"})
+    assert set(selection.alphabet.chars) == {"a", "b"}
+
+
+def test_floor_reproduces_and_fixes_the_real_bug() -> None:
+    """Synthetic repro of the actual incident this feature exists for: a rare
+    base letter loses to a frequent foreign character under plain frequency
+    ranking at a small alphabet size, but survives once it's floored."""
+    rare_letter = "q"
+    foreign_char = "の"  # の — the real incident's intruder
+    corpus = [rare_letter] + [foreign_char] * 5  # foreign clearly outranks rare
+
+    # Without a floor, frequency ranking alone drops the rare letter.
+    bare = select_alphabet(corpus, size=1)
+    assert rare_letter not in bare.alphabet.chars
+    assert foreign_char in bare.alphabet.chars
+
+    # With the rare letter floored, it survives regardless of frequency.
+    floored = select_alphabet(corpus, size=2, floor={rare_letter})
+    assert rare_letter in floored.alphabet.chars
+
+
+def test_floor_larger_than_size_raises() -> None:
+    with pytest.raises(TrainingError, match="floor needs"):
+        select_alphabet(["abcdef"], size=2, floor={"a", "b", "c"})
+
+
+def test_empty_floor_matches_original_behaviour() -> None:
+    """floor=() (the default) must be byte-identical to pre-floor selection."""
+    passwords = ["aaaa", "aaab", "bbcc", "abcd"]
+    with_default = select_alphabet(passwords, size=3)
+    with_explicit_empty = select_alphabet(passwords, size=3, floor=())
+    assert with_default.alphabet.as_string() == with_explicit_empty.alphabet.as_string()
