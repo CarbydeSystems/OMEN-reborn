@@ -11,11 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `--max-length-std` on `omen train`: when `--max-length` is not given, it is
-  now computed from the corpus itself as `ceil(mean + N * stdev)` over the
-  lengths of passwords the trained alphabet can represent (default `N=1.5`),
-  instead of a fixed cutoff of 20. Pass `--max-length` explicitly to keep the
-  old fixed behaviour.
+- `--max-length-std`/`--max-length-percentile` on `omen train`: when
+  `--max-length` is not given, it is now computed from the corpus itself as
+  the larger of `ceil(mean + N * stdev)` (default `N=1.5`) and the length
+  covering a given percentile of the corpus (default: 0.995), instead of a
+  fixed cutoff of 20. The percentile estimate catches a long-but-thin tail
+  that mean+stdev alone can miss on a low-variance corpus; it's skipped
+  under 30 passwords, where it would be noise rather than signal. Pass
+  `--max-length` explicitly to keep the old fixed behaviour.
 - `--min-symbol-slots` on `omen train` and `omen alphabet`: with `--profile`,
   the alphabet size is now auto-raised above `--alphabet-size`/`--size` when
   needed so the profile's floor never crowds non-floor symbols and

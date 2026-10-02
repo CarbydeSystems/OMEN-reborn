@@ -37,6 +37,11 @@ from omen.profiles import PROFILES, available_profiles, floor_chars
 
 CorpusFactory = Callable[[], Iterable[str]]
 
+# Below this many representable passwords, a percentile is noise, not
+# signal — too few samples to resolve a tail point like p99.5 meaningfully,
+# so _resolve_max_length falls back to the mean+std estimate alone.
+MIN_SAMPLES_FOR_PERCENTILE = 30
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingOptions:
@@ -53,10 +58,20 @@ class TrainingOptions:
     floor crowd out symbols and punctuation.
 
     ``max_length`` of ``None`` (the default) computes it from the corpus
-    itself at train time: ``ceil(mean + max_length_std * stdev)`` over the
-    lengths of passwords the resolved alphabet can represent, clamped to
-    ``[ngram - 1, MAX_PASSWORD_LENGTH]``. Pass an explicit value to restore
-    the old fixed-cutoff behaviour.
+    itself at train time, as the larger of two estimates over the lengths of
+    passwords the resolved alphabet can represent:
+
+    * ``ceil(mean + max_length_std * stdev)`` — a tight, low-variance corpus
+      (small stdev) gets a tight cutoff.
+    * the ``max_length_percentile`` length (e.g. 0.995 = the length covering
+      99.5% of the corpus) — a long-but-thin tail still gets covered even
+      when it isn't far in *stdev* terms, which the mean+std estimate alone
+      can miss on a corpus whose lengths cluster very tightly. Skipped on
+      fewer than :data:`MIN_SAMPLES_FOR_PERCENTILE` passwords, where a
+      percentile would just be reporting sampling noise.
+
+    Both are clamped to ``[ngram - 1, MAX_PASSWORD_LENGTH]``. Pass an
+    explicit ``max_length`` to restore the old fixed-cutoff behaviour.
     """
 
     ngram: int = 3
@@ -64,6 +79,7 @@ class TrainingOptions:
     smoothing: float = 0.01
     max_length: int | None = None
     max_length_std: float = 1.5
+    max_length_percentile: float = 0.995
     alphabet: str | None = None
     alphabet_size: int = 72
     min_symbol_slots: int = DEFAULT_MIN_SYMBOL_SLOTS
@@ -86,6 +102,10 @@ class TrainingOptions:
             )
         if not self.max_length_std > 0.0:
             raise TrainingError(f"max_length_std must be > 0, got {self.max_length_std}")
+        if not 0.0 < self.max_length_percentile <= 1.0:
+            raise TrainingError(
+                f"max_length_percentile must be in (0, 1], got {self.max_length_percentile}"
+            )
         if self.alphabet_size < 1:
             raise TrainingError(f"alphabet_size must be >= 1, got {self.alphabet_size}")
         if self.min_symbol_slots < 0:
@@ -142,11 +162,13 @@ class ModelTrainer:
     def _resolve_max_length(self, alphabet: Alphabet, corpus_factory: CorpusFactory) -> int:
         """Return the configured ``max_length``, or compute it from the corpus.
 
-        Computed as ``ceil(mean + max_length_std * stdev)`` over the lengths of
-        passwords the alphabet can represent (mirrors what :class:`_Counts`
-        itself measures), clamped to stay trainable. This is a population
-        statistic over *this* corpus, not an inference about a wider one —
-        ``statistics.pstdev`` is deliberate, not a stand-in for sample stdev.
+        Computed over the lengths of passwords the alphabet can represent
+        (mirrors what :class:`_Counts` itself measures) as the larger of a
+        mean+stdev estimate and a percentile estimate — see
+        :class:`TrainingOptions` for why both — then clamped to stay
+        trainable. ``statistics.pstdev`` (population, not sample) is
+        deliberate: this is a statistic over *this* corpus, not an inference
+        about a wider one.
         """
         if self._opt.max_length is not None:
             return self._opt.max_length
@@ -161,7 +183,15 @@ class ModelTrainer:
         mean = statistics.fmean(lengths)
         stdev = statistics.pstdev(lengths, mean)
         raw = mean + self._opt.max_length_std * stdev
+        if len(lengths) >= MIN_SAMPLES_FOR_PERCENTILE:
+            raw = max(raw, self._percentile_length(lengths))
         return max(ctx_len, min(MAX_PASSWORD_LENGTH, math.ceil(raw)))
+
+    def _percentile_length(self, lengths: list[int]) -> int:
+        """The length at or below which ``max_length_percentile`` of ``lengths`` fall."""
+        ordered = sorted(lengths)
+        idx = min(len(ordered) - 1, int(self._opt.max_length_percentile * len(ordered)))
+        return ordered[idx]
 
     def _build_model(self, alphabet: Alphabet, counts: _Counts) -> NgramModel:
         opt = self._opt

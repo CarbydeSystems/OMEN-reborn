@@ -194,10 +194,21 @@ the same kind of hard limit an alphabet has, just for length instead of
 characters.
 
 By default, `--max-length` is no longer fixed at 20. `omen train` computes
-it from the corpus itself: the mean password length, plus `--max-length-std`
-standard deviations (default: 1.5), rounded up. A corpus with longer
-passwords gets a higher limit automatically. Pass `--max-length` yourself to
-set a fixed value instead.
+it from the corpus itself, as the larger of two estimates:
+
+- the mean password length, plus `--max-length-std` standard deviations
+  (default: 1.5), rounded up;
+- the length covering `--max-length-percentile` of the corpus (default:
+  0.995, the 99.5th percentile).
+
+The first estimate alone can undershoot on a corpus whose lengths cluster
+very tightly: a long tail can sit many standard deviations out even though
+it's only a few characters longer in absolute terms, so a small `std`
+multiplier never reaches it. The percentile estimate catches that tail
+directly, in terms of how much of the corpus it actually covers, rather than
+how far it sits from the mean. On fewer than 30 passwords a percentile is
+noise, not signal, so training falls back to the mean+std estimate alone.
+Pass `--max-length` yourself to set a fixed value instead of either.
 
 Raising the limit costs little at training time — the length table is small
 and grows linearly, not with the alphabet. The real cost shows up later, at

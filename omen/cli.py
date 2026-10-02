@@ -35,7 +35,7 @@ from omen.model import NgramModel
 from omen.profiles import alphabet_warnings, available_profiles, floor_chars
 from omen.score import PasswordScorer
 from omen.spool import CHUNK_PLACEHOLDER, SpoolConfig, run_spool
-from omen.train import ModelTrainer, TrainingOptions
+from omen.train import MIN_SAMPLES_FOR_PERCENTILE, ModelTrainer, TrainingOptions
 
 CorpusFactory = Callable[[], Iterable[str]]
 
@@ -87,8 +87,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-length-std",
         type=float,
         default=1.5,
-        help="auto --max-length = corpus mean length + this many standard "
-        "deviations (default: 1.5; ignored if --max-length is set)",
+        help="auto --max-length std estimate = corpus mean length + this "
+        "many standard deviations (default: 1.5; ignored if --max-length "
+        "is set)",
+    )
+    p_train.add_argument(
+        "--max-length-percentile",
+        type=float,
+        default=0.995,
+        help="auto --max-length also covers at least this fraction of "
+        "corpus password lengths (default: 0.995 = p99.5; skipped under "
+        f"{MIN_SAMPLES_FOR_PERCENTILE} passwords; the final value is "
+        "whichever of this and --max-length-std is larger)",
     )
     p_train.add_argument(
         "--supplement",
@@ -215,6 +225,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         smoothing=args.smoothing,
         max_length=args.max_length,
         max_length_std=args.max_length_std,
+        max_length_percentile=args.max_length_percentile,
         alphabet=args.alphabet,
         alphabet_size=args.alphabet_size,
         min_symbol_slots=args.min_symbol_slots,
@@ -237,8 +248,10 @@ def _cmd_train(args: argparse.Namespace) -> int:
     if max_length_was_auto:
         print(
             f"omen: max_length auto-computed as {model.max_length} "
-            f"(corpus mean + {args.max_length_std:g}x std; pass --max-length "
-            "to override)",
+            f"(larger of corpus mean + {args.max_length_std:g}x std, and the "
+            f"length covering {args.max_length_percentile:.1%} of the corpus "
+            f"when there are at least {MIN_SAMPLES_FOR_PERCENTILE} passwords; "
+            "pass --max-length to override)",
             file=sys.stderr,
         )
     if effective_size > args.alphabet_size and args.alphabet is None:

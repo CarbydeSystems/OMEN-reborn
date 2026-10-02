@@ -9,7 +9,7 @@ import pytest
 
 from omen.errors import TrainingError
 from omen.model import MAX_PASSWORD_LENGTH
-from omen.train import ModelTrainer, TrainingOptions
+from omen.train import MIN_SAMPLES_FOR_PERCENTILE, ModelTrainer, TrainingOptions
 
 
 def test_max_length_std_rejects_non_positive() -> None:
@@ -17,6 +17,19 @@ def test_max_length_std_rejects_non_positive() -> None:
         TrainingOptions(max_length_std=0.0).validate()
     with pytest.raises(TrainingError, match="max_length_std"):
         TrainingOptions(max_length_std=-1.0).validate()
+
+
+def test_max_length_percentile_rejects_out_of_range() -> None:
+    with pytest.raises(TrainingError, match="max_length_percentile"):
+        TrainingOptions(max_length_percentile=0.0).validate()
+    with pytest.raises(TrainingError, match="max_length_percentile"):
+        TrainingOptions(max_length_percentile=1.5).validate()
+    with pytest.raises(TrainingError, match="max_length_percentile"):
+        TrainingOptions(max_length_percentile=-0.1).validate()
+
+
+def test_max_length_percentile_allows_the_boundary_value() -> None:
+    TrainingOptions(max_length_percentile=1.0).validate()
 
 
 def test_min_symbol_slots_rejects_negative() -> None:
@@ -81,6 +94,41 @@ def test_auto_max_length_clamped_at_the_hard_maximum() -> None:
         lambda: iter(corpus)
     )
     assert model.max_length == MAX_PASSWORD_LENGTH
+
+
+def test_auto_max_length_percentile_covers_a_thin_tail_std_would_miss() -> None:
+    """Reproduces the real mismatch the hybrid exists for: a tight,
+    low-variance cluster (std of 95 passwords at length 10) plus a thin long
+    tail (5 at length 30). mean+1.5*std alone lands at ~17.5 — the tail is
+    many stdevs out even though it isn't that much longer in absolute terms
+    — while the 99.5th percentile reaches the tail directly."""
+    lengths = [10] * 95 + [30] * 5  # n=100 >= MIN_SAMPLES_FOR_PERCENTILE
+    corpus = ["a" * n for n in lengths]
+    mean = statistics.fmean(lengths)
+    stdev = statistics.pstdev(lengths, mean)
+    std_based = mean + 1.5 * stdev
+    ordered = sorted(lengths)
+    percentile_based = ordered[min(len(ordered) - 1, int(0.995 * len(ordered)))]
+    assert percentile_based > std_based  # the mismatch actually exists in this fixture
+
+    model = ModelTrainer(TrainingOptions(ngram=2, alphabet="a")).train(lambda: iter(corpus))
+    assert model.max_length == math.ceil(max(std_based, percentile_based))
+    assert model.max_length == 30  # concretely: the tail is fully covered
+
+
+def test_auto_max_length_percentile_skipped_below_the_sample_floor() -> None:
+    """The same shape as above, but too few samples to trust a percentile —
+    must fall back to the pure mean+std estimate, not reach for the tail."""
+    lengths = [10] * 25 + [30] * 1  # n=26 < MIN_SAMPLES_FOR_PERCENTILE
+    assert len(lengths) < MIN_SAMPLES_FOR_PERCENTILE
+    corpus = ["a" * n for n in lengths]
+    mean = statistics.fmean(lengths)
+    stdev = statistics.pstdev(lengths, mean)
+    std_based = mean + 1.5 * stdev
+
+    model = ModelTrainer(TrainingOptions(ngram=2, alphabet="a")).train(lambda: iter(corpus))
+    assert model.max_length == math.ceil(std_based)
+    assert model.max_length == 17  # concretely: nowhere near the lone-outlier tail (30)
 
 
 def test_profile_floor_auto_raises_the_trained_alphabet_size() -> None:
