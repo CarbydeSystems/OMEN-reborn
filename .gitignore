@@ -1,0 +1,13 @@
+# Design/redesign working docs that reference real engagement data — reference
+# only, never committed (see PR discussion: a prior version of this file was
+# force-pushed out of history after landing in a public commit by mistake).
+alphabet_improvement*.md
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Native build output (built via `make -C native`)
+native/omen-enum
+native/omen-rank

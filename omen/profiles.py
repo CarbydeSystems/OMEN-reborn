@@ -6,8 +6,7 @@ noisy corpus this can silently drop a base letter of the target language to
 a frequency fluke elsewhere in the data (a real incident: a 72-char English
 alphabet trained on a crackstation sample lost uppercase ``Q``, ``J``, ``X``
 to a single stray Japanese character that happened to be marginally more
-frequent — see ``alphabet_improvement.md`` in the repo root for the full
-repro). A password containing a dropped letter becomes permanently
+frequent). A password containing a dropped letter becomes permanently
 unrepresentable: not deprioritised, excluded.
 
 A :class:`LanguageProfile` names a *floor*: characters a profile guarantees

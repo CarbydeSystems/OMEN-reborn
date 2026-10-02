@@ -90,9 +90,13 @@ def read_corpus(path: Path | str) -> Iterator[Iterator[str]]:
     """Yield an iterator of passwords from ``path`` (a file or ``-`` for stdin).
 
     Lines are decoded as UTF-8 with ``errors="replace"`` (corpora are untrusted
-    and may contain invalid byte sequences).  Only the trailing ``\\n``/``\\r``
-    is stripped — interior whitespace is part of the password.  Empty lines are
-    skipped.  Reading is lazy, so the file is never fully materialised.
+    and may contain invalid byte sequences).  Any line whose text contains
+    U+FFFD (the replacement character) is dropped entirely — whether it came
+    from an invalid byte sequence in this file or was already present in the
+    input — rather than letting a decode artifact compete for a real alphabet
+    slot.  Only the trailing ``\\n``/``\\r`` is stripped from surviving lines —
+    interior whitespace is part of the password.  Empty lines are skipped.
+    Reading is lazy, so the file is never fully materialised.
     """
     if str(path) == "-":
         import sys
@@ -108,5 +112,5 @@ def read_corpus(path: Path | str) -> Iterator[Iterator[str]]:
 def _iter_lines(lines: Iterator[str] | list[str]) -> Iterator[str]:
     for line in lines:
         pw = line.rstrip("\r\n")
-        if pw:
+        if pw and "�" not in pw:
             yield pw

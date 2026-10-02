@@ -67,8 +67,9 @@ Without installing, run as a module from the repo root: `python -m omen ...`.
 ## Usage
 
 ```bash
-# 1. Train a model from a password list
-omen train -i cracked.txt -m model/ --ngram 3 --levels 11 --max-length 20
+# 1. Train a model from a password list (max length is auto-computed from
+#    the corpus's own length spread — pass --max-length to fix it yourself)
+omen train -i cracked.txt -m model/ --ngram 3 --levels 11
 
 # 1b. Sparse org corpus? Supplement it with the first 500K rockyou passwords
 #     so the n-gram model isn't starved on a handful of cracks (0 = whole file)
@@ -144,6 +145,16 @@ one of these profiles at the default size, `train` stops with a clear error
 and tells you the size to use instead. This is correct behaviour, not a bug
 to work around — a Cyrillic password needs room for Cyrillic letters.
 
+A floor can use up most of `--alphabet-size`. The German floor alone is 70
+characters — out of a default size of 72, that leaves only 2 slots for
+everything else: punctuation included. `train` and `alphabet` raise the size
+automatically when this happens, so at least `--min-symbol-slots` (default:
+14) stay free for non-floor characters on top of the floor:
+
+```
+omen: alphabet size auto-raised 72 -> 84 (70 profile floor + 14 symbol headroom)
+```
+
 The floor data comes from hashcat's own `charsets/combined/*.hcchr` files —
 character sets already used across the password-cracking community. `omen`
 does not read these files. The letters are copied once into
@@ -167,6 +178,33 @@ wrong, whether or not you gave a profile:
 `omen inspect` prints the same two checks for any saved model, including one
 trained in an earlier session — the model file remembers which profile (if
 any) was used.
+
+A corpus can also contain a different kind of noise: text that failed to
+decode cleanly. `omen` reads training files as UTF-8. A byte sequence that
+isn't valid UTF-8 decodes to U+FFFD, the Unicode replacement character — and
+an alphabet built by raw frequency could seat it like any other character.
+`omen` drops any line containing U+FFFD before counting characters, so a
+decode error can never win an alphabet slot.
+
+## Password length
+
+`omen train` also has a `--max-length`. A password longer than this is never
+representable by the model — not ranked low, excluded completely. This is
+the same kind of hard limit an alphabet has, just for length instead of
+characters.
+
+By default, `--max-length` is no longer fixed at 20. `omen train` computes
+it from the corpus itself: the mean password length, plus `--max-length-std`
+standard deviations (default: 1.5), rounded up. A corpus with longer
+passwords gets a higher limit automatically. Pass `--max-length` yourself to
+set a fixed value instead.
+
+Raising the limit costs little at training time — the length table is small
+and grows linearly, not with the alphabet. The real cost shows up later, at
+generation time: every longer candidate takes more steps to produce, and
+uses more of a fixed chunk-size budget when feeding a cracker like hashcat.
+Re-measure generation speed after a large `--max-length` increase, the same
+way you would after changing the alphabet size.
 
 ## Model format
 

@@ -1,0 +1,101 @@
+"""Tests for TrainingOptions validation and auto-computed max_length."""
+
+from __future__ import annotations
+
+import math
+import statistics
+
+import pytest
+
+from omen.errors import TrainingError
+from omen.model import MAX_PASSWORD_LENGTH
+from omen.train import ModelTrainer, TrainingOptions
+
+
+def test_max_length_std_rejects_non_positive() -> None:
+    with pytest.raises(TrainingError, match="max_length_std"):
+        TrainingOptions(max_length_std=0.0).validate()
+    with pytest.raises(TrainingError, match="max_length_std"):
+        TrainingOptions(max_length_std=-1.0).validate()
+
+
+def test_min_symbol_slots_rejects_negative() -> None:
+    with pytest.raises(TrainingError, match="min_symbol_slots"):
+        TrainingOptions(min_symbol_slots=-1).validate()
+
+
+def test_explicit_max_length_is_never_recomputed() -> None:
+    """An explicit max_length is the escape hatch back to the old fixed
+    behaviour — it must win regardless of the corpus's own length spread."""
+    corpus = ["a" * 3, "a" * 50, "a" * 3, "a" * 3]  # wildly skewed lengths
+    model = ModelTrainer(TrainingOptions(ngram=2, alphabet="a", max_length=10)).train(
+        lambda: iter(corpus)
+    )
+    assert model.max_length == 10
+
+
+def test_auto_max_length_matches_mean_plus_k_std() -> None:
+    """Hand-computed ground truth: a small, uniform-alphabet corpus whose
+    mean/stdev are easy to verify by hand, checked against the same formula
+    the implementation uses (ceil(mean + k*std), population stdev)."""
+    lengths = [3, 4, 4, 5, 5, 5, 6, 6, 7]
+    corpus = ["a" * n for n in lengths]
+    k = 1.5
+    expected_raw = statistics.fmean(lengths) + k * statistics.pstdev(lengths)
+
+    model = ModelTrainer(TrainingOptions(ngram=2, alphabet="a", max_length_std=k)).train(
+        lambda: iter(corpus)
+    )
+
+    assert model.max_length == math.ceil(expected_raw)
+
+
+def test_auto_max_length_responds_to_the_std_multiplier() -> None:
+    lengths = [5, 5, 5, 5, 15]  # one long outlier pulls stdev way up
+    corpus = ["a" * n for n in lengths]
+
+    low_k = ModelTrainer(TrainingOptions(ngram=2, alphabet="a", max_length_std=0.1)).train(
+        lambda: iter(corpus)
+    )
+    high_k = ModelTrainer(TrainingOptions(ngram=2, alphabet="a", max_length_std=3.0)).train(
+        lambda: iter(corpus)
+    )
+    assert high_k.max_length > low_k.max_length
+
+
+def test_auto_max_length_clamped_above_context_length() -> None:
+    """A corpus dominated by short passwords computes a raw mean+k*std below
+    ctx_len (ngram - 1 = 4 here); it must clamp up to ctx_len to stay
+    trainable, rather than producing a max_length shorter than one context."""
+    corpus = ["a"] * 10 + ["aaaa"] * 2  # mean/std pulled well below 4 by the 1s
+    model = ModelTrainer(TrainingOptions(ngram=5, alphabet="a", max_length_std=1.0)).train(
+        lambda: iter(corpus)
+    )
+    assert model.max_length == 4  # ctx_len = ngram - 1, the clamp floor
+
+
+def test_auto_max_length_clamped_at_the_hard_maximum() -> None:
+    lengths = [MAX_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH - 1]
+    corpus = ["a" * n for n in lengths]
+    model = ModelTrainer(TrainingOptions(ngram=2, alphabet="a", max_length_std=50.0)).train(
+        lambda: iter(corpus)
+    )
+    assert model.max_length == MAX_PASSWORD_LENGTH
+
+
+def test_profile_floor_auto_raises_the_trained_alphabet_size() -> None:
+    """A corpus with >= 14 distinct non-floor characters plus --profile de
+    must end up with an alphabet sized to the floor plus the full default
+    symbol headroom (84 = 70 + 14), not squeezed into the bare requested
+    alphabet_size (72) the floor would otherwise leave almost no room in."""
+    from omen.profiles import floor_chars
+
+    symbols = "!@#$%^&*()-_=+"  # 14 distinct non-floor characters
+    corpus = [f"passwort{s}" for s in symbols] * 5
+    model = ModelTrainer(TrainingOptions(profile="de", max_length=12, alphabet_size=72)).train(
+        lambda: iter(corpus)
+    )
+
+    floor = floor_chars("de")
+    assert floor <= set(model.alphabet.chars)
+    assert model.alphabet_size == len(floor) + 14
