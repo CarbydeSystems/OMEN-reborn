@@ -10,7 +10,7 @@ This is an independent implementation written from the published algorithm
 
 from __future__ import annotations
 
-from omen.alphabet import Alphabet, AlphabetSelection, select_alphabet
+from omen.alphabet import Alphabet, AlphabetSelection, effective_alphabet_size, select_alphabet
 from omen.enumerate import Enumerator, PyEnumerator
 from omen.errors import ConfigError, ModelError, OmenError, TrainingError
 from omen.levels import LevelScale
@@ -26,7 +26,7 @@ from omen.score import PasswordScore, PasswordScorer
 from omen.spool import ChunkSpooler, HashcatRunner, SpoolConfig, SpoolResult, run_spool
 from omen.train import ModelTrainer, TrainingOptions
 
-__version__ = "0.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "PROFILES",
@@ -52,6 +52,7 @@ __all__ = [
     "__version__",
     "alphabet_warnings",
     "available_profiles",
+    "effective_alphabet_size",
     "floor_chars",
     "run_spool",
     "select_alphabet",

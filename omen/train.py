@@ -19,16 +19,28 @@ of continuations observed from a context, and ``occ(ctx) = cont(ctx) + end(ctx)`
 
 from __future__ import annotations
 
+import math
+import statistics
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from omen.alphabet import Alphabet, select_alphabet
+from omen.alphabet import (
+    DEFAULT_MIN_SYMBOL_SLOTS,
+    Alphabet,
+    effective_alphabet_size,
+    select_alphabet,
+)
 from omen.errors import TrainingError
 from omen.levels import LevelScale
 from omen.model import MAX_NGRAM, MAX_PASSWORD_LENGTH, NgramModel, checked_pow
 from omen.profiles import PROFILES, available_profiles, floor_chars
 
 CorpusFactory = Callable[[], Iterable[str]]
+
+# Below this many representable passwords, a percentile is noise, not
+# signal — too few samples to resolve a tail point like p99.5 meaningfully,
+# so _resolve_max_length falls back to the mean+std estimate alone.
+MIN_SAMPLES_FOR_PERCENTILE = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,15 +51,38 @@ class TrainingOptions:
     ``alphabet_size`` characters are chosen from the corpus by frequency,
     reserving a floor for ``profile`` first (see :mod:`omen.profiles`) when
     one is given — ``profile`` and ``alphabet`` are mutually exclusive, since
-    an explicit alphabet already fully determines the charset.
+    an explicit alphabet already fully determines the charset. A profile's
+    floor is also guaranteed at least ``min_symbol_slots`` of headroom beyond
+    it (see :func:`~omen.alphabet.effective_alphabet_size`), raising the
+    effective alphabet size above ``alphabet_size`` rather than letting the
+    floor crowd out symbols and punctuation.
+
+    ``max_length`` of ``None`` (the default) computes it from the corpus
+    itself at train time, as the larger of two estimates over the lengths of
+    passwords the resolved alphabet can represent:
+
+    * ``ceil(mean + max_length_std * stdev)`` — a tight, low-variance corpus
+      (small stdev) gets a tight cutoff.
+    * the ``max_length_percentile`` length (e.g. 0.995 = the length covering
+      99.5% of the corpus) — a long-but-thin tail still gets covered even
+      when it isn't far in *stdev* terms, which the mean+std estimate alone
+      can miss on a corpus whose lengths cluster very tightly. Skipped on
+      fewer than :data:`MIN_SAMPLES_FOR_PERCENTILE` passwords, where a
+      percentile would just be reporting sampling noise.
+
+    Both are clamped to ``[ngram - 1, MAX_PASSWORD_LENGTH]``. Pass an
+    explicit ``max_length`` to restore the old fixed-cutoff behaviour.
     """
 
     ngram: int = 3
     levels: int = 11
     smoothing: float = 0.01
-    max_length: int = 20
+    max_length: int | None = None
+    max_length_std: float = 1.5
+    max_length_percentile: float = 0.995
     alphabet: str | None = None
     alphabet_size: int = 72
+    min_symbol_slots: int = DEFAULT_MIN_SYMBOL_SLOTS
     profile: str | None = None
     ep_enabled: bool = True
 
@@ -58,13 +93,23 @@ class TrainingOptions:
             raise TrainingError(f"levels must be in [2, 256], got {self.levels}")
         if not self.smoothing > 0.0:
             raise TrainingError(f"smoothing (δ) must be > 0, got {self.smoothing}")
-        if not self.ngram - 1 <= self.max_length <= MAX_PASSWORD_LENGTH:
+        if self.max_length is not None and not (
+            self.ngram - 1 <= self.max_length <= MAX_PASSWORD_LENGTH
+        ):
             raise TrainingError(
                 f"max_length must be in [{self.ngram - 1}, {MAX_PASSWORD_LENGTH}], "
                 f"got {self.max_length}"
             )
+        if not self.max_length_std > 0.0:
+            raise TrainingError(f"max_length_std must be > 0, got {self.max_length_std}")
+        if not 0.0 < self.max_length_percentile <= 1.0:
+            raise TrainingError(
+                f"max_length_percentile must be in (0, 1], got {self.max_length_percentile}"
+            )
         if self.alphabet_size < 1:
             raise TrainingError(f"alphabet_size must be >= 1, got {self.alphabet_size}")
+        if self.min_symbol_slots < 0:
+            raise TrainingError(f"min_symbol_slots must be >= 0, got {self.min_symbol_slots}")
         if self.profile is not None:
             if self.alphabet is not None:
                 raise TrainingError("profile and alphabet are mutually exclusive")
@@ -87,9 +132,12 @@ class ModelTrainer:
 
         ``corpus_factory`` returns a fresh iterator of passwords each time it is
         called.  It is called once for alphabet selection (only when the alphabet
-        is auto) and once for counting, so a one-shot iterator is never reused.
+        is auto), once more for length statistics (only when ``max_length`` is
+        auto), and once for counting — so a one-shot iterator is never reused.
         """
         alphabet = self._resolve_alphabet(corpus_factory)
+        max_length = self._resolve_max_length(alphabet, corpus_factory)
+        self._opt = replace(self._opt, max_length=max_length)
         counts = _Counts(alphabet, self._opt.ngram, self._opt.max_length)
         counts.tally(corpus_factory())
         if counts.num_passwords == 0:
@@ -105,8 +153,45 @@ class ModelTrainer:
         if self._opt.alphabet is not None:
             return Alphabet.from_chars(self._opt.alphabet)
         floor = floor_chars(self._opt.profile) if self._opt.profile else ()
-        selection = select_alphabet(corpus_factory(), self._opt.alphabet_size, floor=floor)
+        size = effective_alphabet_size(
+            self._opt.alphabet_size, floor, min_symbol_slots=self._opt.min_symbol_slots
+        )
+        selection = select_alphabet(corpus_factory(), size, floor=floor)
         return selection.alphabet
+
+    def _resolve_max_length(self, alphabet: Alphabet, corpus_factory: CorpusFactory) -> int:
+        """Return the configured ``max_length``, or compute it from the corpus.
+
+        Computed over the lengths of passwords the alphabet can represent
+        (mirrors what :class:`_Counts` itself measures) as the larger of a
+        mean+stdev estimate and a percentile estimate — see
+        :class:`TrainingOptions` for why both — then clamped to stay
+        trainable. ``statistics.pstdev`` (population, not sample) is
+        deliberate: this is a statistic over *this* corpus, not an inference
+        about a wider one.
+        """
+        if self._opt.max_length is not None:
+            return self._opt.max_length
+        ctx_len = self._opt.ngram - 1
+        encode = alphabet.encode
+        lengths = [len(codes) for pw in corpus_factory() if (codes := encode(pw)) is not None]
+        if not lengths:
+            raise TrainingError(
+                "no usable passwords in corpus (all empty, too long/short, "
+                "or contain out-of-alphabet characters)"
+            )
+        mean = statistics.fmean(lengths)
+        stdev = statistics.pstdev(lengths, mean)
+        raw = mean + self._opt.max_length_std * stdev
+        if len(lengths) >= MIN_SAMPLES_FOR_PERCENTILE:
+            raw = max(raw, self._percentile_length(lengths))
+        return max(ctx_len, min(MAX_PASSWORD_LENGTH, math.ceil(raw)))
+
+    def _percentile_length(self, lengths: list[int]) -> int:
+        """The length at or below which ``max_length_percentile`` of ``lengths`` fall."""
+        ordered = sorted(lengths)
+        idx = min(len(ordered) - 1, int(self._opt.max_length_percentile * len(ordered)))
+        return ordered[idx]
 
     def _build_model(self, alphabet: Alphabet, counts: _Counts) -> NgramModel:
         opt = self._opt
@@ -280,6 +365,12 @@ class _Counts:
         encode = self._alphabet.encode
         ctx_len = self._ctx_len
         for pw in passwords:
+            # A literal U+FFFD is a decode artifact, not a real password
+            # character (see select_alphabet) — excluded before coverage
+            # accounting too, same as read_corpus already excludes it on the
+            # CLI's own ingestion path.
+            if "�" in pw:
+                continue
             # Coverage is measured over every character, before any filtering.
             self.total_chars += len(pw)
             self.retained_chars += sum(1 for ch in pw if contains(ch))

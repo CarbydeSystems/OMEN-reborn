@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from omen.alphabet import Alphabet, select_alphabet
+from omen.alphabet import Alphabet, effective_alphabet_size, select_alphabet
 from omen.errors import ConfigError, TrainingError
 
 
@@ -106,3 +106,29 @@ def test_empty_floor_matches_original_behaviour() -> None:
     with_default = select_alphabet(passwords, size=3)
     with_explicit_empty = select_alphabet(passwords, size=3, floor=())
     assert with_default.alphabet.as_string() == with_explicit_empty.alphabet.as_string()
+
+
+# -- effective_alphabet_size (floor/symbol-budget compensation) -------------
+
+
+def test_effective_size_is_a_true_noop_with_no_floor() -> None:
+    """No floor means nothing to compensate for — regression guard: this must
+    hold even when requested_size is far smaller than min_symbol_slots."""
+    assert effective_alphabet_size(72, ()) == 72
+    assert effective_alphabet_size(3, ()) == 3
+
+
+def test_effective_size_raises_to_cover_floor_plus_headroom() -> None:
+    floor = set("abcdefghij")  # 10 chars
+    assert effective_alphabet_size(12, floor, min_symbol_slots=14) == 24  # 10 + 14
+
+
+def test_effective_size_keeps_requested_when_already_large_enough() -> None:
+    floor = set("abc")  # 3 chars
+    assert effective_alphabet_size(100, floor, min_symbol_slots=14) == 100
+
+
+def test_effective_size_min_symbol_slots_is_configurable() -> None:
+    floor = set("abcdefghij")  # 10 chars
+    assert effective_alphabet_size(12, floor, min_symbol_slots=0) == 12
+    assert effective_alphabet_size(12, floor, min_symbol_slots=5) == 15

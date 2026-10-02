@@ -24,6 +24,12 @@ from omen.errors import ConfigError, TrainingError
 # covers printable ASCII plus common Latin-1 symbols.
 MAX_ALPHABET_SIZE = 256
 
+# Default minimum non-floor slots guaranteed by effective_alphabet_size(). A
+# large profile floor can otherwise leave almost nothing for symbols and
+# punctuation; 14 is a reasonable starting point, not a measured optimum —
+# override via TrainingOptions.min_symbol_slots / --min-symbol-slots.
+DEFAULT_MIN_SYMBOL_SLOTS = 14
+
 
 @dataclass(frozen=True, slots=True)
 class Alphabet:
@@ -111,6 +117,30 @@ class AlphabetSelection:
     distinct_chars: int
 
 
+def effective_alphabet_size(
+    requested_size: int,
+    floor: Iterable[str],
+    *,
+    min_symbol_slots: int = DEFAULT_MIN_SYMBOL_SLOTS,
+) -> int:
+    """Raise ``requested_size`` so a profile floor never crowds out symbols.
+
+    A floor (see :mod:`omen.profiles`) guarantees its own characters a slot
+    inside a fixed-size alphabet; left uncompensated, a large floor can leave
+    only a handful of slots for everything else — punctuation, symbols, any
+    non-floor character the corpus actually uses. This guarantees at least
+    ``min_symbol_slots`` beyond the floor instead of silently shrinking the
+    remainder. Always a no-op (returns ``requested_size`` unchanged) for
+    ``floor=()`` — with nothing reserved, there is no budget to compensate
+    for — and whenever the floor is already small relative to
+    ``requested_size``.
+    """
+    floor_size = len(frozenset(floor))
+    if floor_size == 0:
+        return requested_size
+    return max(requested_size, floor_size + min_symbol_slots)
+
+
 def select_alphabet(
     passwords: Iterable[str], size: int, *, floor: Iterable[str] = ()
 ) -> AlphabetSelection:
@@ -145,6 +175,11 @@ def select_alphabet(
 
     counts: Counter[str] = Counter()
     for pw in passwords:
+        # A literal U+FFFD (replacement character) is a decode artifact, never
+        # a real password character — never let it compete for a slot, even
+        # when the caller bypassed read_corpus's own filtering (see io_utils).
+        if "�" in pw:
+            continue
         counts.update(pw)
 
     total = sum(counts.values())

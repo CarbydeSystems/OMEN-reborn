@@ -26,7 +26,7 @@ import sys
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
-from omen.alphabet import select_alphabet
+from omen.alphabet import effective_alphabet_size, select_alphabet
 from omen.enumerate import PyEnumerator
 from omen.errors import OmenError
 from omen.inspect import ModelInspector
@@ -35,7 +35,7 @@ from omen.model import NgramModel
 from omen.profiles import alphabet_warnings, available_profiles, floor_chars
 from omen.score import PasswordScorer
 from omen.spool import CHUNK_PLACEHOLDER, SpoolConfig, run_spool
-from omen.train import ModelTrainer, TrainingOptions
+from omen.train import MIN_SAMPLES_FOR_PERCENTILE, ModelTrainer, TrainingOptions
 
 CorpusFactory = Callable[[], Iterable[str]]
 
@@ -77,7 +77,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "--smoothing", type=float, default=0.01, help="add-δ smoothing (default: 0.01)"
     )
     p_train.add_argument(
-        "--max-length", type=int, default=20, help="maximum password length (default: 20)"
+        "--max-length",
+        type=int,
+        default=None,
+        help="maximum password length (default: auto — corpus mean + "
+        "--max-length-std standard deviations)",
+    )
+    p_train.add_argument(
+        "--max-length-std",
+        type=float,
+        default=1.5,
+        help="auto --max-length std estimate = corpus mean length + this "
+        "many standard deviations (default: 1.5; ignored if --max-length "
+        "is set)",
+    )
+    p_train.add_argument(
+        "--max-length-percentile",
+        type=float,
+        default=0.995,
+        help="auto --max-length also covers at least this fraction of "
+        "corpus password lengths (default: 0.995 = p99.5; skipped under "
+        f"{MIN_SAMPLES_FOR_PERCENTILE} passwords; the final value is "
+        "whichever of this and --max-length-std is larger)",
     )
     p_train.add_argument(
         "--supplement",
@@ -106,6 +127,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="reserve a language's floor characters before frequency-ranking "
         "the remainder (mutually exclusive with --alphabet); see omen alphabet "
         "--profile to preview one",
+    )
+    p_train.add_argument(
+        "--min-symbol-slots",
+        type=int,
+        default=14,
+        help="with --profile, guarantee at least this many alphabet slots "
+        "beyond the profile floor, raising --alphabet-size if needed "
+        "(default: 14)",
     )
     p_train.add_argument(
         "--no-ep", action="store_true", help="disable the word-ending (EP) component"
@@ -138,6 +167,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=available_profiles(),
         default=None,
         help="preview with a language's floor characters reserved first",
+    )
+    p_alpha.add_argument(
+        "--min-symbol-slots",
+        type=int,
+        default=14,
+        help="with --profile, guarantee at least this many alphabet slots "
+        "beyond the profile floor, raising --size if needed (default: 14)",
     )
     p_alpha.set_defaults(handler=_cmd_alphabet)
 
@@ -178,13 +214,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
+    floor = floor_chars(args.profile) if args.profile else ()
+    effective_size = effective_alphabet_size(
+        args.alphabet_size, floor, min_symbol_slots=args.min_symbol_slots
+    )
+    max_length_was_auto = args.max_length is None
     options = TrainingOptions(
         ngram=args.ngram,
         levels=args.levels,
         smoothing=args.smoothing,
         max_length=args.max_length,
+        max_length_std=args.max_length_std,
+        max_length_percentile=args.max_length_percentile,
         alphabet=args.alphabet,
         alphabet_size=args.alphabet_size,
+        min_symbol_slots=args.min_symbol_slots,
         profile=args.profile,
         ep_enabled=not args.no_ep,
     )
@@ -197,14 +241,29 @@ def _cmd_train(args: argparse.Namespace) -> int:
     model.save(args.model)
     print(
         f"omen: trained model saved to {args.model} "
-        f"(alphabet={model.alphabet_size}, coverage={model.coverage:.1%}, "
-        f"lam={model.scale.lam:.4g})",
+        f"(alphabet={model.alphabet_size}, max_length={model.max_length}, "
+        f"coverage={model.coverage:.1%}, lam={model.scale.lam:.4g})",
         file=sys.stderr,
     )
-    if model.alphabet_size < args.alphabet_size and args.alphabet is None:
+    if max_length_was_auto:
+        print(
+            f"omen: max_length auto-computed as {model.max_length} "
+            f"(larger of corpus mean + {args.max_length_std:g}x std, and the "
+            f"length covering {args.max_length_percentile:.1%} of the corpus "
+            f"when there are at least {MIN_SAMPLES_FOR_PERCENTILE} passwords; "
+            "pass --max-length to override)",
+            file=sys.stderr,
+        )
+    if effective_size > args.alphabet_size and args.alphabet is None:
+        print(
+            f"omen: alphabet size auto-raised {args.alphabet_size} -> {effective_size} "
+            f"({len(floor)} profile floor + {effective_size - len(floor)} symbol headroom)",
+            file=sys.stderr,
+        )
+    if model.alphabet_size < effective_size and args.alphabet is None:
         print(
             f"omen: warning: alphabet has only {model.alphabet_size} characters "
-            f"(requested {args.alphabet_size}) — the corpus doesn't contain that "
+            f"(requested {effective_size}) — the corpus doesn't contain that "
             "many distinct characters",
             file=sys.stderr,
         )
@@ -301,18 +360,26 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 def _cmd_alphabet(args: argparse.Namespace) -> int:
     floor = floor_chars(args.profile) if args.profile else ()
+    effective_size = effective_alphabet_size(
+        args.size, floor, min_symbol_slots=args.min_symbol_slots
+    )
     with read_corpus(args.input) as passwords:
-        selection = select_alphabet(passwords, args.size, floor=floor)
+        selection = select_alphabet(passwords, effective_size, floor=floor)
     print(f"size      : {selection.alphabet.size}")
     print(f"coverage  : {selection.coverage:.4%}")
     print(f"distinct  : {selection.distinct_chars}")
     print(f"total     : {selection.total_chars}")
     print(f"profile   : {args.profile if args.profile else '(none — pure frequency)'}")
     print(f"alphabet  : {selection.alphabet.as_string()}")
-    if selection.alphabet.size < args.size:
+    if effective_size > args.size:
+        print(
+            f"size      : auto-raised {args.size} -> {effective_size} "
+            f"({len(floor)} profile floor + {effective_size - len(floor)} symbol headroom)"
+        )
+    if selection.alphabet.size < effective_size:
         print(
             f"warning   : alphabet has only {selection.alphabet.size} characters "
-            f"(requested {args.size}) — the corpus doesn't contain that many "
+            f"(requested {effective_size}) — the corpus doesn't contain that many "
             "distinct characters"
         )
     for warning in alphabet_warnings(selection.alphabet.chars, args.profile):
@@ -356,8 +423,10 @@ def _cmd_spool(args: argparse.Namespace) -> int:
 def _corpus_factory(source: str) -> CorpusFactory:
     """Return a factory yielding a fresh password iterator on each call.
 
-    Training needs up to two passes (alphabet selection, then counting).  For a
-    file we re-open on each pass; for stdin (single-shot) we materialise once.
+    Training needs up to three passes (alphabet selection, length statistics
+    for an auto max_length, then counting) — not all always run; see
+    :meth:`~omen.train.ModelTrainer.train`.  For a file we re-open on each
+    pass; for stdin (single-shot) we materialise once.
     """
     if source == "-":
         with read_corpus(source) as passwords:
@@ -378,7 +447,7 @@ def _supplemented_factory(base: CorpusFactory, supplement: str, max_lines: int) 
 
     The supplement is capped to its first ``max_lines`` passwords (0 = all).
     Like :func:`_corpus_factory`, the returned factory must produce a *fresh*
-    iterator on every call (training passes over the corpus up to twice).
+    iterator on every call (training passes over the corpus up to three times).
     """
     supp = _corpus_factory(supplement)  # reuses stdin-materialisation logic
 
