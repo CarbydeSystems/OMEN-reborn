@@ -18,6 +18,7 @@ Subcommands::
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import shlex
 import shutil
@@ -32,7 +33,7 @@ from omen.errors import OmenError
 from omen.inspect import ModelInspector
 from omen.io_utils import ByteSink, read_corpus
 from omen.model import NgramModel
-from omen.profiles import alphabet_warnings, available_profiles, floor_chars
+from omen.profiles import alphabet_warnings, available_profiles, floor_chars, is_expected_script
 from omen.score import PasswordScorer
 from omen.spool import CHUNK_PLACEHOLDER, SpoolConfig, run_spool
 from omen.train import MIN_SAMPLES_FOR_PERCENTILE, ModelTrainer, TrainingOptions
@@ -237,7 +238,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
     factory = _corpus_factory(args.input)
     if args.supplement:
         factory = _supplemented_factory(factory, args.supplement, args.supplement_lines)
-    model = ModelTrainer(options).train(factory)
+    trainer = ModelTrainer(options)
+    model = trainer.train(factory)
     model.save(args.model)
     print(
         f"omen: trained model saved to {args.model} "
@@ -267,7 +269,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "many distinct characters",
             file=sys.stderr,
         )
-    for warning in alphabet_warnings(model.alphabet.chars, model.profile):
+    excluded = trainer.alphabet_selection.excluded if trainer.alphabet_selection else ()
+    for warning in alphabet_warnings(model.alphabet.chars, model.profile, excluded=excluded):
         print(f"omen: warning: {warning}", file=sys.stderr)
     return 0
 
@@ -360,11 +363,16 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 def _cmd_alphabet(args: argparse.Namespace) -> int:
     floor = floor_chars(args.profile) if args.profile else ()
+    prefer = (
+        functools.partial(is_expected_script, profile=args.profile)
+        if args.profile is not None
+        else None
+    )
     effective_size = effective_alphabet_size(
         args.size, floor, min_symbol_slots=args.min_symbol_slots
     )
     with read_corpus(args.input) as passwords:
-        selection = select_alphabet(passwords, effective_size, floor=floor)
+        selection = select_alphabet(passwords, effective_size, floor=floor, prefer=prefer)
     print(f"size      : {selection.alphabet.size}")
     print(f"coverage  : {selection.coverage:.4%}")
     print(f"distinct  : {selection.distinct_chars}")
@@ -382,7 +390,10 @@ def _cmd_alphabet(args: argparse.Namespace) -> int:
             f"(requested {effective_size}) — the corpus doesn't contain that many "
             "distinct characters"
         )
-    for warning in alphabet_warnings(selection.alphabet.chars, args.profile):
+    warnings = alphabet_warnings(
+        selection.alphabet.chars, args.profile, excluded=selection.excluded
+    )
+    for warning in warnings:
         print(f"warning   : {warning}")
     return 0
 

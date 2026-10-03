@@ -160,6 +160,18 @@ character sets already used across the password-cracking community. `omen`
 does not read these files. The letters are copied once into
 `omen/profiles.py`, so `omen` has no dependency on hashcat being installed.
 
+A floor only protects a profile's own letters. The slots left over are still
+filled by plain frequency — and plain frequency has no notion of script. A
+large foreign-language sample mixed into the corpus (a multi-language breach
+compilation, say) could still win one of those slots over a legitimate
+symbol from the profile's own script: the same failure mode a floor exists
+to prevent, just one layer further out — a real case found `?` losing out to
+two Japanese punctuation marks this way, in a corpus where the floor fix
+alone had already recovered `Q`/`J`/`X`. With `--profile` set, `train` and
+`alphabet` now fill the leftover slots from same-script-or-scriptless
+characters first, and only draw from foreign-script ones if that pool runs
+out.
+
 `train` and `alphabet` both print a warning when something still looks
 wrong, whether or not you gave a profile:
 
@@ -174,10 +186,16 @@ wrong, whether or not you gave a profile:
   and warns about any character outside it. This is the check that would
   have caught the real `Q`/`J`/`X` case above, even with no profile named at
   all.
+- **Either way**, if a foreign-script character still made the alphabet,
+  `omen` also names the highest-ranked same-script character that was
+  excluded instead — a concrete "here's what you're missing," not just
+  "something's wrong."
 
-`omen inspect` prints the same two checks for any saved model, including one
-trained in an earlier session — the model file remembers which profile (if
-any) was used.
+`omen inspect` prints the first two checks for any saved model, including
+one trained in an earlier session — the model file remembers which profile
+(if any) was used. The last one needs the corpus's own character frequency,
+which a saved model doesn't keep, so it only runs right after training or
+from `omen alphabet`, not from `inspect`.
 
 A corpus can also contain a different kind of noise: text that failed to
 decode cleanly. `omen` reads training files as UTF-8. A byte sequence that

@@ -21,12 +21,13 @@ from omen.profiles import (
     alphabet_warnings,
     available_profiles,
     floor_chars,
+    is_expected_script,
 )
 from omen.score import PasswordScore, PasswordScorer
 from omen.spool import ChunkSpooler, HashcatRunner, SpoolConfig, SpoolResult, run_spool
 from omen.train import ModelTrainer, TrainingOptions
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
     "PROFILES",
@@ -54,6 +55,7 @@ __all__ = [
     "available_profiles",
     "effective_alphabet_size",
     "floor_chars",
+    "is_expected_script",
     "run_spool",
     "select_alphabet",
 ]

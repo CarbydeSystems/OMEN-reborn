@@ -19,6 +19,7 @@ of continuations observed from a context, and ``occ(ctx) = cont(ctx) + end(ctx)`
 
 from __future__ import annotations
 
+import functools
 import math
 import statistics
 from collections.abc import Callable, Iterable
@@ -27,13 +28,14 @@ from dataclasses import dataclass, replace
 from omen.alphabet import (
     DEFAULT_MIN_SYMBOL_SLOTS,
     Alphabet,
+    AlphabetSelection,
     effective_alphabet_size,
     select_alphabet,
 )
 from omen.errors import TrainingError
 from omen.levels import LevelScale
 from omen.model import MAX_NGRAM, MAX_PASSWORD_LENGTH, NgramModel, checked_pow
-from omen.profiles import PROFILES, available_profiles, floor_chars
+from omen.profiles import PROFILES, available_profiles, floor_chars, is_expected_script
 
 CorpusFactory = Callable[[], Iterable[str]]
 
@@ -126,6 +128,14 @@ class ModelTrainer:
     def __init__(self, options: TrainingOptions) -> None:
         options.validate()
         self._opt = options
+        self.alphabet_selection: AlphabetSelection | None = None
+        """Set by :meth:`train` when the alphabet was auto-selected (i.e.
+        ``options.alphabet`` was ``None``) — ``None`` for an explicit
+        alphabet, which has no frequency ranking to report. Exposes the
+        full :class:`~omen.alphabet.AlphabetSelection`, including
+        ``excluded``, for callers that want more than the trained
+        :class:`NgramModel` keeps (e.g. :func:`~omen.profiles.alphabet_warnings`'s
+        near-miss reporting)."""
 
     def train(self, corpus_factory: CorpusFactory) -> NgramModel:
         """Train a model.
@@ -153,11 +163,18 @@ class ModelTrainer:
         if self._opt.alphabet is not None:
             return Alphabet.from_chars(self._opt.alphabet)
         floor = floor_chars(self._opt.profile) if self._opt.profile else ()
+        prefer = (
+            functools.partial(is_expected_script, profile=self._opt.profile)
+            if self._opt.profile is not None
+            else None
+        )
         size = effective_alphabet_size(
             self._opt.alphabet_size, floor, min_symbol_slots=self._opt.min_symbol_slots
         )
-        selection = select_alphabet(corpus_factory(), size, floor=floor)
-        return selection.alphabet
+        self.alphabet_selection = select_alphabet(
+            corpus_factory(), size, floor=floor, prefer=prefer
+        )
+        return self.alphabet_selection.alphabet
 
     def _resolve_max_length(self, alphabet: Alphabet, corpus_factory: CorpusFactory) -> int:
         """Return the configured ``max_length``, or compute it from the corpus.
