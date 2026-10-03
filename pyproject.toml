@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omen-reborn"
-version = "1.2.0"
+version = "1.3.0"
 description = "Clean-room Ordered Markov ENumerator for probability-ranked password candidate generation."
 readme = "README.md"
 requires-python = ">=3.11"

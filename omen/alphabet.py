@@ -13,7 +13,7 @@ file can drive an out-of-range table access downstream.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -115,6 +115,12 @@ class AlphabetSelection:
     """Fraction of corpus characters retained by the chosen alphabet (0..1)."""
     total_chars: int
     distinct_chars: int
+    excluded: tuple[tuple[str, int], ...] = ()
+    """Non-floor candidates ranked but not chosen, i.e. ``(char, count)`` pairs
+    for every corpus character that didn't get a slot. Most frequent first
+    within each ``prefer`` partition (see :func:`select_alphabet`) — used by
+    :func:`~omen.profiles.alphabet_warnings` to name the strongest candidate
+    a foreign character crowded out."""
 
 
 def effective_alphabet_size(
@@ -142,7 +148,11 @@ def effective_alphabet_size(
 
 
 def select_alphabet(
-    passwords: Iterable[str], size: int, *, floor: Iterable[str] = ()
+    passwords: Iterable[str],
+    size: int,
+    *,
+    floor: Iterable[str] = (),
+    prefer: Callable[[str], bool] | None = None,
 ) -> AlphabetSelection:
     """Choose ``size`` characters across ``passwords``: a reserved floor first,
     the remainder by frequency.
@@ -155,6 +165,23 @@ def select_alphabet(
     (descending count, then ascending code point) as when ``floor`` is empty —
     which is the original, unconstrained "top `size` by global frequency"
     behaviour this parameter is additive to.
+
+    ``prefer``, when given, splits that remainder ranking into two pools
+    before filling slots: characters where ``prefer(ch)`` is true, and
+    everything else. Every preferred candidate outranks every non-preferred
+    one regardless of relative frequency — the remainder is filled from the
+    preferred pool first, only drawing from the rest if the preferred pool
+    can't cover the budget. Typically a profile's expected-script check (see
+    :func:`~omen.profiles.is_expected_script`): the floor already guarantees
+    a profile's own letters a slot, but without ``prefer`` the *remainder*
+    slots are still pure frequency, so a large foreign-script corpus sample
+    (e.g. a multi-language breach compilation) can still crowd out a
+    legitimate same-script symbol there — the same failure mode ``floor``
+    exists to prevent, just one layer further out.
+
+    Candidates that ranked but didn't make the cut are returned too, as
+    :attr:`AlphabetSelection.excluded` — e.g. for
+    :func:`~omen.profiles.alphabet_warnings` to name one.
 
     Raises :class:`TrainingError` if ``floor`` alone has more distinct
     characters than ``size`` — raise ``size`` rather than silently dropping
@@ -187,10 +214,8 @@ def select_alphabet(
         raise TrainingError("corpus contains no characters to build an alphabet from")
 
     remaining_slots = size - len(floor_set)
-    # Sort by descending frequency, then ascending code point for determinism.
-    ranked = sorted(
-        ((ch, n) for ch, n in counts.items() if ch not in floor_set), key=lambda kv: (-kv[1], kv[0])
-    )
+    candidates = [(ch, n) for ch, n in counts.items() if ch not in floor_set]
+    ranked = _rank_candidates(candidates, prefer)
     chosen = sorted(floor_set) + [ch for ch, _ in ranked[:remaining_slots]]
     alphabet = Alphabet.from_chars(chosen)
     retained = sum(counts.get(ch, 0) for ch in chosen)
@@ -199,4 +224,21 @@ def select_alphabet(
         coverage=retained / total,
         total_chars=total,
         distinct_chars=len(counts),
+        excluded=tuple(ranked[remaining_slots:]),
     )
+
+
+def _rank_candidates(
+    candidates: list[tuple[str, int]], prefer: Callable[[str], bool] | None
+) -> list[tuple[str, int]]:
+    """Frequency-rank ``candidates`` (descending count, then code point).
+
+    Partitioned by ``prefer`` first when given: every preferred candidate
+    outranks every non-preferred one, so filling slots from the front of the
+    result exhausts the preferred pool before touching the rest.
+    """
+    if prefer is None:
+        return sorted(candidates, key=lambda kv: (-kv[1], kv[0]))
+    preferred = sorted((kv for kv in candidates if prefer(kv[0])), key=lambda kv: (-kv[1], kv[0]))
+    rest = sorted((kv for kv in candidates if not prefer(kv[0])), key=lambda kv: (-kv[1], kv[0]))
+    return preferred + rest

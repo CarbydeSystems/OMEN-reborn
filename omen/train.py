@@ -19,6 +19,7 @@ of continuations observed from a context, and ``occ(ctx) = cont(ctx) + end(ctx)`
 
 from __future__ import annotations
 
+import functools
 import math
 import statistics
 from collections.abc import Callable, Iterable
@@ -27,13 +28,14 @@ from dataclasses import dataclass, replace
 from omen.alphabet import (
     DEFAULT_MIN_SYMBOL_SLOTS,
     Alphabet,
+    AlphabetSelection,
     effective_alphabet_size,
     select_alphabet,
 )
 from omen.errors import TrainingError
 from omen.levels import LevelScale
 from omen.model import MAX_NGRAM, MAX_PASSWORD_LENGTH, NgramModel, checked_pow
-from omen.profiles import PROFILES, available_profiles, floor_chars
+from omen.profiles import PROFILES, available_profiles, floor_chars, is_expected_script
 
 CorpusFactory = Callable[[], Iterable[str]]
 
@@ -41,6 +43,12 @@ CorpusFactory = Callable[[], Iterable[str]]
 # signal — too few samples to resolve a tail point like p99.5 meaningfully,
 # so _resolve_max_length falls back to the mean+std estimate alone.
 MIN_SAMPLES_FOR_PERCENTILE = 30
+
+# Defaults for the two auto-max_length estimates (see TrainingOptions) —
+# named so cli.py's argparse defaults can reference the same numbers
+# instead of duplicating them.
+DEFAULT_MAX_LENGTH_STD = 1.5
+DEFAULT_MAX_LENGTH_PERCENTILE = 0.995
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +86,8 @@ class TrainingOptions:
     levels: int = 11
     smoothing: float = 0.01
     max_length: int | None = None
-    max_length_std: float = 1.5
-    max_length_percentile: float = 0.995
+    max_length_std: float = DEFAULT_MAX_LENGTH_STD
+    max_length_percentile: float = DEFAULT_MAX_LENGTH_PERCENTILE
     alphabet: str | None = None
     alphabet_size: int = 72
     min_symbol_slots: int = DEFAULT_MIN_SYMBOL_SLOTS
@@ -126,6 +134,14 @@ class ModelTrainer:
     def __init__(self, options: TrainingOptions) -> None:
         options.validate()
         self._opt = options
+        self.alphabet_selection: AlphabetSelection | None = None
+        """Set by :meth:`train` when the alphabet was auto-selected (i.e.
+        ``options.alphabet`` was ``None``) — ``None`` for an explicit
+        alphabet, which has no frequency ranking to report. Exposes the
+        full :class:`~omen.alphabet.AlphabetSelection`, including
+        ``excluded``, for callers that want more than the trained
+        :class:`NgramModel` keeps (e.g. :func:`~omen.profiles.alphabet_warnings`'s
+        near-miss reporting)."""
 
     def train(self, corpus_factory: CorpusFactory) -> NgramModel:
         """Train a model.
@@ -153,20 +169,28 @@ class ModelTrainer:
         if self._opt.alphabet is not None:
             return Alphabet.from_chars(self._opt.alphabet)
         floor = floor_chars(self._opt.profile) if self._opt.profile else ()
+        prefer = (
+            functools.partial(is_expected_script, profile=self._opt.profile)
+            if self._opt.profile is not None
+            else None
+        )
         size = effective_alphabet_size(
             self._opt.alphabet_size, floor, min_symbol_slots=self._opt.min_symbol_slots
         )
-        selection = select_alphabet(corpus_factory(), size, floor=floor)
-        return selection.alphabet
+        self.alphabet_selection = select_alphabet(
+            corpus_factory(), size, floor=floor, prefer=prefer
+        )
+        return self.alphabet_selection.alphabet
 
     def _resolve_max_length(self, alphabet: Alphabet, corpus_factory: CorpusFactory) -> int:
         """Return the configured ``max_length``, or compute it from the corpus.
 
-        Computed over the lengths of passwords the alphabet can represent
-        (mirrors what :class:`_Counts` itself measures) as the larger of a
-        mean+stdev estimate and a percentile estimate — see
-        :class:`TrainingOptions` for why both — then clamped to stay
-        trainable. ``statistics.pstdev`` (population, not sample) is
+        Computed over the lengths of passwords the alphabet can represent —
+        same ``encode()`` test :class:`_Counts` uses, though without its
+        ``ctx_len``/``max_length`` bounds filtering, which would be circular
+        here — as the larger of a mean+stdev estimate and a percentile
+        estimate (see :class:`TrainingOptions` for why both), then clamped
+        to stay trainable. ``statistics.pstdev`` (population, not sample) is
         deliberate: this is a statistic over *this* corpus, not an inference
         about a wider one.
         """

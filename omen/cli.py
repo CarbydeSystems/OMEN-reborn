@@ -18,6 +18,7 @@ Subcommands::
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import shlex
 import shutil
@@ -26,16 +27,22 @@ import sys
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
-from omen.alphabet import effective_alphabet_size, select_alphabet
+from omen.alphabet import DEFAULT_MIN_SYMBOL_SLOTS, effective_alphabet_size, select_alphabet
 from omen.enumerate import PyEnumerator
 from omen.errors import OmenError
 from omen.inspect import ModelInspector
 from omen.io_utils import ByteSink, read_corpus
 from omen.model import NgramModel
-from omen.profiles import alphabet_warnings, available_profiles, floor_chars
+from omen.profiles import alphabet_warnings, available_profiles, floor_chars, is_expected_script
 from omen.score import PasswordScorer
 from omen.spool import CHUNK_PLACEHOLDER, SpoolConfig, run_spool
-from omen.train import MIN_SAMPLES_FOR_PERCENTILE, ModelTrainer, TrainingOptions
+from omen.train import (
+    DEFAULT_MAX_LENGTH_PERCENTILE,
+    DEFAULT_MAX_LENGTH_STD,
+    MIN_SAMPLES_FOR_PERCENTILE,
+    ModelTrainer,
+    TrainingOptions,
+)
 
 CorpusFactory = Callable[[], Iterable[str]]
 
@@ -86,19 +93,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train.add_argument(
         "--max-length-std",
         type=float,
-        default=1.5,
+        default=DEFAULT_MAX_LENGTH_STD,
         help="auto --max-length std estimate = corpus mean length + this "
-        "many standard deviations (default: 1.5; ignored if --max-length "
-        "is set)",
+        f"many standard deviations (default: {DEFAULT_MAX_LENGTH_STD:g}; "
+        "ignored if --max-length is set)",
     )
     p_train.add_argument(
         "--max-length-percentile",
         type=float,
-        default=0.995,
+        default=DEFAULT_MAX_LENGTH_PERCENTILE,
         help="auto --max-length also covers at least this fraction of "
-        "corpus password lengths (default: 0.995 = p99.5; skipped under "
-        f"{MIN_SAMPLES_FOR_PERCENTILE} passwords; the final value is "
-        "whichever of this and --max-length-std is larger)",
+        f"corpus password lengths (default: {DEFAULT_MAX_LENGTH_PERCENTILE:g} "
+        f"= p99.5; skipped under {MIN_SAMPLES_FOR_PERCENTILE} passwords; the "
+        "final value is whichever of this and --max-length-std is larger)",
     )
     p_train.add_argument(
         "--supplement",
@@ -131,10 +138,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train.add_argument(
         "--min-symbol-slots",
         type=int,
-        default=14,
+        default=DEFAULT_MIN_SYMBOL_SLOTS,
         help="with --profile, guarantee at least this many alphabet slots "
         "beyond the profile floor, raising --alphabet-size if needed "
-        "(default: 14)",
+        f"(default: {DEFAULT_MIN_SYMBOL_SLOTS})",
     )
     p_train.add_argument(
         "--no-ep", action="store_true", help="disable the word-ending (EP) component"
@@ -171,9 +178,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_alpha.add_argument(
         "--min-symbol-slots",
         type=int,
-        default=14,
+        default=DEFAULT_MIN_SYMBOL_SLOTS,
         help="with --profile, guarantee at least this many alphabet slots "
-        "beyond the profile floor, raising --size if needed (default: 14)",
+        f"beyond the profile floor, raising --size if needed "
+        f"(default: {DEFAULT_MIN_SYMBOL_SLOTS})",
     )
     p_alpha.set_defaults(handler=_cmd_alphabet)
 
@@ -213,10 +221,22 @@ def _build_parser() -> argparse.ArgumentParser:
 # -- command handlers ------------------------------------------------------
 
 
-def _cmd_train(args: argparse.Namespace) -> int:
-    floor = floor_chars(args.profile) if args.profile else ()
+def _resolve_alphabet_request(
+    profile: str | None, requested_size: int, min_symbol_slots: int
+) -> tuple[frozenset[str], int]:
+    """Floor characters and the (possibly auto-raised) effective alphabet
+    size for a --profile/size pair — shared by ``train`` and ``alphabet``
+    so the two commands always agree on what "requested" means."""
+    floor = floor_chars(profile) if profile else frozenset()
     effective_size = effective_alphabet_size(
-        args.alphabet_size, floor, min_symbol_slots=args.min_symbol_slots
+        requested_size, floor, min_symbol_slots=min_symbol_slots
+    )
+    return floor, effective_size
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    floor, effective_size = _resolve_alphabet_request(
+        args.profile, args.alphabet_size, args.min_symbol_slots
     )
     max_length_was_auto = args.max_length is None
     options = TrainingOptions(
@@ -237,7 +257,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
     factory = _corpus_factory(args.input)
     if args.supplement:
         factory = _supplemented_factory(factory, args.supplement, args.supplement_lines)
-    model = ModelTrainer(options).train(factory)
+    trainer = ModelTrainer(options)
+    model = trainer.train(factory)
     model.save(args.model)
     print(
         f"omen: trained model saved to {args.model} "
@@ -267,7 +288,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "many distinct characters",
             file=sys.stderr,
         )
-    for warning in alphabet_warnings(model.alphabet.chars, model.profile):
+    excluded = trainer.alphabet_selection.excluded if trainer.alphabet_selection else ()
+    for warning in alphabet_warnings(model.alphabet.chars, model.profile, excluded=excluded):
         print(f"omen: warning: {warning}", file=sys.stderr)
     return 0
 
@@ -359,12 +381,16 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_alphabet(args: argparse.Namespace) -> int:
-    floor = floor_chars(args.profile) if args.profile else ()
-    effective_size = effective_alphabet_size(
-        args.size, floor, min_symbol_slots=args.min_symbol_slots
+    floor, effective_size = _resolve_alphabet_request(
+        args.profile, args.size, args.min_symbol_slots
+    )
+    prefer = (
+        functools.partial(is_expected_script, profile=args.profile)
+        if args.profile is not None
+        else None
     )
     with read_corpus(args.input) as passwords:
-        selection = select_alphabet(passwords, effective_size, floor=floor)
+        selection = select_alphabet(passwords, effective_size, floor=floor, prefer=prefer)
     print(f"size      : {selection.alphabet.size}")
     print(f"coverage  : {selection.coverage:.4%}")
     print(f"distinct  : {selection.distinct_chars}")
@@ -382,7 +408,10 @@ def _cmd_alphabet(args: argparse.Namespace) -> int:
             f"(requested {effective_size}) — the corpus doesn't contain that many "
             "distinct characters"
         )
-    for warning in alphabet_warnings(selection.alphabet.chars, args.profile):
+    warnings = alphabet_warnings(
+        selection.alphabet.chars, args.profile, excluded=selection.excluded
+    )
+    for warning in warnings:
         print(f"warning   : {warning}")
     return 0
 

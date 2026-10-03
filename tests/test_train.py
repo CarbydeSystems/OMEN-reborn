@@ -131,6 +131,38 @@ def test_auto_max_length_percentile_skipped_below_the_sample_floor() -> None:
     assert model.max_length == 17  # concretely: nowhere near the lone-outlier tail (30)
 
 
+def test_profile_prefers_same_script_remainder_over_louder_foreign_noise() -> None:
+    """Reproduces the round-3 incident synthetically: a foreign character
+    far more frequent than a legitimate ascii symbol must no longer win the
+    one remainder slot over it, now that --profile wires select_alphabet's
+    script-aware prefer in automatically."""
+    from omen.profiles import floor_chars
+
+    floor_only = "".join(floor_chars("en"))
+    corpus = [floor_only] + ["?"] * 3 + ["の"] * 50  # の, intentionally louder
+    model = ModelTrainer(
+        TrainingOptions(profile="en", alphabet_size=63, min_symbol_slots=1, max_length=62)
+    ).train(lambda: iter(corpus))
+
+    assert "?" in model.alphabet.chars
+    assert "の" not in model.alphabet.chars
+
+
+def test_alphabet_selection_is_exposed_after_auto_selection() -> None:
+    trainer = ModelTrainer(TrainingOptions(ngram=2, alphabet_size=3, max_length=5))
+    trainer.train(lambda: iter(["abc", "aab", "bca"]))
+    assert trainer.alphabet_selection is not None
+    assert isinstance(trainer.alphabet_selection.excluded, tuple)
+
+
+def test_alphabet_selection_is_none_for_an_explicit_alphabet() -> None:
+    """No select_alphabet call happens at all when --alphabet is explicit —
+    nothing to expose, so it must stay None rather than a stale/empty stand-in."""
+    trainer = ModelTrainer(TrainingOptions(ngram=2, alphabet="abc", max_length=5))
+    trainer.train(lambda: iter(["abc", "aab", "bca"]))
+    assert trainer.alphabet_selection is None
+
+
 def test_profile_floor_auto_raises_the_trained_alphabet_size() -> None:
     """A corpus with >= 14 distinct non-floor characters plus --profile de
     must end up with an alphabet sized to the floor plus the full default

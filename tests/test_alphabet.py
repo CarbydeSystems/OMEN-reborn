@@ -132,3 +132,50 @@ def test_effective_size_min_symbol_slots_is_configurable() -> None:
     floor = set("abcdefghij")  # 10 chars
     assert effective_alphabet_size(12, floor, min_symbol_slots=0) == 12
     assert effective_alphabet_size(12, floor, min_symbol_slots=5) == 15
+
+
+# -- prefer parameter (script-aware remainder selection) ---------------------
+
+
+def test_prefer_fills_remainder_from_preferred_pool_first() -> None:
+    """A preferred candidate must win a remainder slot over a far more
+    frequent non-preferred one — the round-3 incident, reproduced directly:
+    '?' (sparse) lost to a foreign character (dense) under plain frequency."""
+    passwords = ["?" * 3, "の" * 10]  # の = の, intentionally louder
+    selection = select_alphabet(passwords, size=1, prefer=lambda ch: ch.isascii())
+    assert selection.alphabet.chars == ("?",)
+
+
+def test_prefer_falls_through_to_the_rest_once_preferred_is_exhausted() -> None:
+    passwords = ["ab", "の" * 5]  # only 2 preferred (ascii) chars exist
+    selection = select_alphabet(passwords, size=3, prefer=lambda ch: ch.isascii())
+    assert set(selection.alphabet.chars) == {"a", "b", "の"}
+
+
+def test_prefer_none_matches_pre_fix_behaviour() -> None:
+    """prefer=None (the default) must be byte-identical to pure frequency."""
+    passwords = ["aaaa", "aaab", "bbcc", "abcd"]
+    without = select_alphabet(passwords, size=3)
+    explicit_none = select_alphabet(passwords, size=3, prefer=None)
+    assert without.alphabet.as_string() == explicit_none.alphabet.as_string()
+
+
+# -- excluded (ranked-but-unchosen candidates) --------------------------
+
+
+def test_excluded_covers_every_non_floor_candidate_not_chosen() -> None:
+    passwords = ["aaaa", "aaab", "bbcc", "abcd"]
+    selection = select_alphabet(passwords, size=2)
+    chosen = set(selection.alphabet.chars)
+    excluded_chars = {ch for ch, _ in selection.excluded}
+    assert chosen | excluded_chars == {"a", "b", "c", "d"}
+    assert chosen.isdisjoint(excluded_chars)
+
+
+def test_excluded_reflects_the_prefer_partition_too() -> None:
+    """A preferred candidate that still didn't make it must appear in
+    excluded alongside non-preferred ones — same accounting either way."""
+    passwords = ["a", "b", "c"] + ["の"] * 100  # の far outnumbers any letter
+    selection = select_alphabet(passwords, size=1, prefer=lambda ch: ch.isascii())
+    assert selection.alphabet.chars == ("a",)  # ties broken by code point
+    assert {ch for ch, _ in selection.excluded} == {"b", "c", "の"}

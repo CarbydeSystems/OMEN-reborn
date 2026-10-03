@@ -15,6 +15,7 @@ from omen.profiles import (
     detect_dominant_script,
     expected_scripts,
     floor_chars,
+    is_expected_script,
 )
 from omen.train import ModelTrainer, TrainingOptions
 
@@ -93,6 +94,24 @@ def test_detect_dominant_script_ignores_digits_and_symbols() -> None:
     assert detect_dominant_script("abc123!") == "LATIN"
 
 
+# -- is_expected_script --------------------------------------------------
+
+
+def test_is_expected_script_scriptless_is_always_expected() -> None:
+    assert is_expected_script("?", "en") is True
+    assert is_expected_script("5", "ru") is True
+
+
+def test_is_expected_script_same_script_is_expected() -> None:
+    assert is_expected_script("a", "en") is True
+    assert is_expected_script("ж", "ru") is True  # Cyrillic zhe
+
+
+def test_is_expected_script_foreign_script_is_not_expected() -> None:
+    assert is_expected_script("の", "en") is False
+    assert is_expected_script("ж", "en") is False  # Cyrillic zhe
+
+
 # -- alphabet_warnings ----------------------------------------------------
 
 
@@ -131,6 +150,44 @@ def test_profile_given_foreign_script_character_is_flagged() -> None:
 def test_native_script_profile_does_not_flag_its_own_script() -> None:
     """A Cyrillic letter must not be 'foreign' to the ru profile."""
     assert alphabet_warnings(floor_chars("ru"), "ru") == []
+
+
+# -- alphabet_warnings near-miss reporting (excluded) --------------------
+
+
+def test_near_miss_omitted_by_default_even_with_a_foreign_character() -> None:
+    """Backward compat: omitting excluded (e.g. ModelInspector on an
+    already-saved model, which has no corpus frequency data left) must not
+    error, and must not fabricate a near-miss out of nothing."""
+    chars = floor_chars("en") | {"の"}
+    warnings = alphabet_warnings(chars, "en")
+    assert not any("highest-ranked excluded" in w for w in warnings)
+
+
+def test_near_miss_profile_branch_names_the_best_excluded_candidate() -> None:
+    chars = floor_chars("en") | {"の"}
+    # "?" and "," are scriptless (always expected); the Cyrillic entry isn't —
+    # the best match must be "?" (higher count), not "," or the Cyrillic one.
+    excluded = [("?", 20), (",", 5), ("ж", 999)]
+    warnings = alphabet_warnings(chars, "en", excluded=excluded)
+    assert any("'?'" in w and "count=20" in w for w in warnings)
+
+
+def test_near_miss_absent_when_no_excluded_candidate_matches() -> None:
+    chars = floor_chars("en") | {"の"}
+    excluded = [("ж", 999)]  # only a foreign candidate excluded
+    warnings = alphabet_warnings(chars, "en", excluded=excluded)
+    assert not any("highest-ranked excluded" in w for w in warnings)
+
+
+def test_near_miss_no_profile_branch() -> None:
+    """The real round-1 scenario: no --profile at all, so there's no prefer
+    mechanism to prevent this — the near-miss check is fully reachable here,
+    unlike the profile branch (see select_alphabet's prefer parameter)."""
+    chars = set("abcdefgh") | {"の"}
+    excluded = [("?", 20)]
+    warnings = alphabet_warnings(chars, None, excluded=excluded)
+    assert any("'?'" in w and "count=20" in w for w in warnings)
 
 
 # -- end-to-end: train -> save -> load -> inspect round trip ------------

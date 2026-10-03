@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 _LATIN_BASE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -193,6 +193,17 @@ def expected_scripts(code: str) -> frozenset[str]:
     return frozenset({"LATIN"}) | _EXTRA_SCRIPTS.get(code, frozenset())
 
 
+def is_expected_script(ch: str, profile: str) -> bool:
+    """Whether ``ch`` is scriptless, or its script is one of ``profile``'s
+    own :func:`expected_scripts` — the same yardstick :func:`alphabet_warnings`
+    uses to flag a foreign character after the fact, exposed here so
+    :func:`~omen.alphabet.select_alphabet` can prefer expected-script
+    candidates *during* selection instead of only checking afterwards.
+    """
+    script = _script(ch)
+    return script == "" or script in expected_scripts(profile)
+
+
 def _script(ch: str) -> str:
     """Best-effort Unicode script name for one character.
 
@@ -225,7 +236,41 @@ def detect_dominant_script(chars: Iterable[str]) -> str:
     return counts.most_common(1)[0][0] if counts else ""
 
 
-def alphabet_warnings(chars: Iterable[str], profile: str | None) -> list[str]:
+def _best_excluded_match(
+    excluded: Iterable[tuple[str, int]], is_expected: Callable[[str], bool]
+) -> tuple[str, int] | None:
+    """Highest-count ``(char, count)`` in ``excluded`` matching ``is_expected``.
+
+    ``None`` if nothing matches. A foreign character inside the alphabet and
+    an expected-script character excluded from it are two symptoms of the
+    same contaminated-corpus cause, not necessarily a direct one-for-one
+    trade — so this names the single strongest excluded candidate rather
+    than pairing one with the other.
+    """
+    matches = [(ch, n) for ch, n in excluded if is_expected(ch)]
+    return max(matches, key=lambda kv: kv[1], default=None)
+
+
+def _append_near_miss_warning(
+    warnings: list[str],
+    excluded: list[tuple[str, int]],
+    is_expected: Callable[[str], bool],
+    explanation: str,
+) -> None:
+    """Append a near-miss warning naming the best excluded match, if any."""
+    best = _best_excluded_match(excluded, is_expected)
+    if best is not None:
+        ch, n = best
+        warnings.append(
+            f"the highest-ranked excluded character was {ch!r} (count={n}) — {explanation}"
+        )
+
+
+def alphabet_warnings(
+    chars: Iterable[str],
+    profile: str | None,
+    excluded: Iterable[tuple[str, int]] = (),
+) -> list[str]:
     """Human-readable warnings for a trained alphabet, or ``[]`` if none.
 
     Two independent checks, chosen by whether a profile was used:
@@ -243,8 +288,16 @@ def alphabet_warnings(chars: Iterable[str], profile: str | None) -> list[str]:
       all-Latin 72-char English alphabet, with no profile ever named). Takes
       the alphabet's own dominant script as the implied baseline via
       :func:`detect_dominant_script` and flags anything outside it.
+
+    ``excluded`` — typically :attr:`~omen.alphabet.AlphabetSelection.excluded`
+    — lets either check additionally name the highest-ranked expected-script
+    character that was crowded out, whenever a foreign character made the
+    alphabet despite one being available. Omit it (the default) when none is
+    available — e.g. :class:`~omen.inspect.ModelInspector` reporting on an
+    already-saved model, which keeps no corpus frequency data to show.
     """
     chars = list(chars)
+    excluded = list(excluded)
     warnings: list[str] = []
 
     if profile is not None:
@@ -263,15 +316,22 @@ def alphabet_warnings(chars: Iterable[str], profile: str | None) -> list[str]:
         # part of those floors and must not warn every time they're used.
         allowed = expected_scripts(profile)
         foreign = sorted(
-            ch
-            for ch in chars
-            if ch not in floor and _script(ch) not in allowed and _script(ch) != ""
+            ch for ch in chars if ch not in floor and not is_expected_script(ch, profile)
         )
         if foreign:
             warnings.append(
                 f"alphabet has {len(foreign)} character(s) outside profile "
                 f"{profile!r}'s expected script(s) ({'/'.join(sorted(allowed))}): "
                 f"{''.join(foreign)}"
+            )
+            _append_near_miss_warning(
+                warnings,
+                excluded,
+                lambda ch: is_expected_script(ch, profile),
+                "an expected-script candidate was excluded while a "
+                "foreign-script one was kept; select_alphabet's own "
+                "script-aware remainder selection prevents this when it ran, "
+                "so this alphabet likely wasn't built through it",
             )
         return warnings
 
@@ -282,5 +342,11 @@ def alphabet_warnings(chars: Iterable[str], profile: str | None) -> list[str]:
             warnings.append(
                 f"alphabet looks mixed-script (dominant: {dominant}, no --profile "
                 f"given); {len(foreign)} character(s) look foreign: {''.join(foreign)}"
+            )
+            _append_near_miss_warning(
+                warnings,
+                excluded,
+                lambda ch: _script(ch) in (dominant, ""),
+                "training with --profile enables script-aware selection, which may recover it",
             )
     return warnings

@@ -187,6 +187,61 @@ def test_alphabet_cli_with_profile_preview() -> None:
     assert "ñ" in out  # Spanish floor letter, guaranteed regardless of corpus
 
 
+def test_alphabet_cli_profile_prefers_same_script_remainder(tmp_path: Path) -> None:
+    """End-to-end round-3 regression: with --profile, a far louder
+    foreign-script character must not win the one remainder slot over a
+    legitimate scriptless symbol — see omen/alphabet.py's `prefer`."""
+    from omen.profiles import floor_chars
+
+    corpus = tmp_path / "corpus.txt"
+    floor_only = "".join(floor_chars("en"))
+    corpus.write_text(f"{floor_only}\n{'?' * 3}\n{'の' * 50}\n", encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen",
+            "alphabet",
+            "-i",
+            str(corpus),
+            "--profile",
+            "en",
+            "--size",
+            "63",
+            "--min-symbol-slots",
+            "1",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    out = proc.stdout.decode("utf-8")
+    assert "?" in out.rsplit("alphabet  : ", 1)[1].splitlines()[0]
+    assert "の" not in out
+
+
+def test_alphabet_cli_no_profile_near_miss_names_the_excluded_symbol(tmp_path: Path) -> None:
+    """End-to-end for the near-miss warning: with no --profile at all,
+    there's no script-aware preference to prevent a foreign character from
+    winning a slot over a sparser real symbol — the warning must name it."""
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(f"{'abcdefghij' * 20}\n{'の' * 15}\n{'?' * 3}\n", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "-m", "omen", "alphabet", "-i", str(corpus), "--size", "11"],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    out = proc.stdout.decode("utf-8")
+    assert "の" in out.rsplit("alphabet  : ", 1)[1].splitlines()[0]
+    assert "looks mixed-script" in out
+    assert "highest-ranked excluded character was '?' (count=3)" in out
+
+
 def test_train_rejects_profile_and_alphabet_together(tmp_path: Path) -> None:
     out = tmp_path / "model"
     proc = subprocess.run(
