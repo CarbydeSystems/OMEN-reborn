@@ -27,7 +27,7 @@ from omen.score import PasswordScore, PasswordScorer
 from omen.spool import ChunkSpooler, HashcatRunner, SpoolConfig, SpoolResult, run_spool
 from omen.train import ModelTrainer, TrainingOptions
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 __all__ = [
     "PROFILES",

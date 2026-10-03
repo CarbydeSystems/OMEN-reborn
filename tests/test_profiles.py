@@ -10,6 +10,7 @@ from omen.errors import TrainingError
 from omen.model import NgramModel
 from omen.profiles import (
     PROFILES,
+    _script,
     alphabet_warnings,
     available_profiles,
     detect_dominant_script,
@@ -110,6 +111,55 @@ def test_is_expected_script_same_script_is_expected() -> None:
 def test_is_expected_script_foreign_script_is_not_expected() -> None:
     assert is_expected_script("の", "en") is False
     assert is_expected_script("ж", "en") is False  # Cyrillic zhe
+
+
+# -- round-4 regression: East-Asian-width punctuation is not "scriptless" --
+
+# Real offenders found in the rjf corpus investigation: all share a Unicode
+# General Category (Po/Ps/Pe) with ordinary ASCII punctuation, so the
+# category-only check alone would wrongly call them scriptless.
+_EAST_ASIAN_WIDE_OFFENDERS = {
+    "。": "IDEOGRAPHIC FULL STOP",
+    "、": "IDEOGRAPHIC COMMA",
+    chr(0xFF08): "FULLWIDTH LEFT PARENTHESIS",  # chr(): looks like ASCII "("
+    chr(0xFF09): "FULLWIDTH RIGHT PARENTHESIS",  # chr(): looks like ASCII ")"
+    "・": "KATAKANA MIDDLE DOT",
+    "「": "LEFT CORNER BRACKET",
+    "」": "RIGHT CORNER BRACKET",
+    "『": "LEFT WHITE CORNER BRACKET",
+    "』": "RIGHT WHITE CORNER BRACKET",
+}
+
+
+def test_east_asian_wide_punctuation_is_not_scriptless() -> None:
+    for ch, name in _EAST_ASIAN_WIDE_OFFENDERS.items():
+        assert _script(ch) == "EAST_ASIAN_WIDE", name
+
+
+def test_east_asian_wide_punctuation_is_foreign_to_every_profile() -> None:
+    """No profile expects it — there's no ja/zh profile yet, so every one
+    of these is correctly foreign everywhere, same as の already was."""
+    for ch, name in _EAST_ASIAN_WIDE_OFFENDERS.items():
+        for code in available_profiles():
+            assert is_expected_script(ch, code) is False, (name, code)
+
+
+def test_universal_ascii_punctuation_is_still_scriptless() -> None:
+    """The fix must not regress the original, correct behaviour: plain
+    ASCII punctuation, digits, and symbols stay universally expected."""
+    for ch in "?,;.!()[]{}\"'&%/#_@$+=0123456789":
+        assert _script(ch) == "", ch
+        assert is_expected_script(ch, "en") is True, ch
+
+
+def test_non_east_asian_locale_bound_punctuation_is_out_of_scope() -> None:
+    """Documents a known, deliberate gap: this fix targets East-Asian
+    width specifically. Arabic comma (and similar non-CJK locale-bound
+    punctuation) still reads as scriptless — a real but separate case,
+    not addressed here."""
+    arabic_comma = "،"
+    assert _script(arabic_comma) == ""
+    assert is_expected_script(arabic_comma, "en") is True
 
 
 # -- alphabet_warnings ----------------------------------------------------

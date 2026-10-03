@@ -222,6 +222,45 @@ def test_alphabet_cli_profile_prefers_same_script_remainder(tmp_path: Path) -> N
     assert "の" not in out
 
 
+def test_alphabet_cli_profile_prefers_real_punctuation_over_cjk_punctuation(
+    tmp_path: Path,
+) -> None:
+    """End-to-end round-4 regression: IDEOGRAPHIC FULL STOP shares a
+    Unicode category with ASCII punctuation, so it used to slip past the
+    round-3 fix (which only caught foreign *letters*) and still beat '?'
+    for the one remainder slot. See omen/profiles.py's east_asian_width
+    check in `_script`."""
+    from omen.profiles import floor_chars
+
+    corpus = tmp_path / "corpus.txt"
+    floor_only = "".join(floor_chars("en"))
+    corpus.write_text(f"{floor_only}\n{'?' * 3}\n{'。' * 50}\n", encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen",
+            "alphabet",
+            "-i",
+            str(corpus),
+            "--profile",
+            "en",
+            "--size",
+            "63",
+            "--min-symbol-slots",
+            "1",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0
+    out = proc.stdout.decode("utf-8")
+    assert "?" in out.rsplit("alphabet  : ", 1)[1].splitlines()[0]
+    assert "。" not in out
+
+
 def test_alphabet_cli_no_profile_near_miss_names_the_excluded_symbol(tmp_path: Path) -> None:
     """End-to-end for the near-miss warning: with no --profile at all,
     there's no script-aware preference to prevent a foreign character from
