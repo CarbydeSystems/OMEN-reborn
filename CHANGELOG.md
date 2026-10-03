@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-03
+
+### Fixed
+
+- CJK full-width punctuation (e.g. `。` IDEOGRAPHIC FULL STOP, `、`
+  IDEOGRAPHIC COMMA, `（` FULLWIDTH LEFT PARENTHESIS) shares a Unicode
+  General Category with ordinary ASCII punctuation, so round 3's
+  script-aware remainder fix didn't catch it — it checks a character's
+  Unicode *name* for a script word, which that category short-circuits
+  before it ever runs. `_script()` now also checks East Asian width
+  (`unicodedata.east_asian_width`): a character marked Wide or Fullwidth
+  is treated as locale-bound even when its category looks universal. One
+  systematic check, not a hand-maintained name-prefix list — verified
+  against the real corpus to also catch `KATAKANA MIDDLE DOT` and the
+  `CORNER BRACKET` family, which a narrower name-based fix would have
+  missed. Non-CJK locale-bound punctuation (e.g. Arabic comma) is a known,
+  separate gap, not addressed here.
+
+### Changed
+
+- Split the README: `USERGUIDE.md` (new) now holds language profiles,
+  password length tuning, the model format, the module map, and
+  performance/portability details, all in Simplified Technical English.
+  `README.md` keeps the pitch, the benchmark chart, and the install/usage/
+  build commands — the dev install and lint/type/test commands moved to
+  the User Guide.
+
 ## [1.3.0] - 2026-10-03
 
 ### Added
@@ -82,7 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   speed-only change, orders of magnitude faster than the pure-Python path on
   large batches.
 
-[Unreleased]: https://github.com/CarbydeSystems/OMEN-reborn/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/CarbydeSystems/OMEN-reborn/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/CarbydeSystems/OMEN-reborn/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/CarbydeSystems/OMEN-reborn/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/CarbydeSystems/OMEN-reborn/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/CarbydeSystems/OMEN-reborn/compare/v1.0.0...v1.1.0

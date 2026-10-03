@@ -60,9 +60,20 @@ _LATIN_BASE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 # punctuation, currency/math/other symbols, separators. A character in one
 # of these is never "foreign" to any profile; it just isn't evidence for or
 # against a script either way.
+#
+# Exception: East-Asian-width "Wide"/"Fullwidth" punctuation (UAX #11,
+# unicodedata.east_asian_width) shares these same categories with plain
+# ASCII punctuation, but is exactly as locale-bound as a Hiragana or
+# Cyrillic letter — e.g. U+3002 IDEOGRAPHIC FULL STOP, U+FF08 FULLWIDTH
+# LEFT PARENTHESIS, U+30FB KATAKANA MIDDLE DOT, U+300C LEFT CORNER
+# BRACKET. None of those share a usable Unicode-name prefix with each
+# other, so _script() checks the width property directly, below, instead
+# of hand-listing names one at a time as each is discovered.
 _SCRIPTLESS_CATEGORIES = frozenset(
     {"Nd", "Nl", "No", "Pc", "Pd", "Pe", "Pf", "Pi", "Po", "Ps", "Sc", "Sk", "Sm", "So", "Zs"}
 )
+_EAST_ASIAN_WIDE_WIDTHS = frozenset({"W", "F"})
+_EAST_ASIAN_WIDE_SCRIPT = "EAST_ASIAN_WIDE"
 
 # Every profile's floor is Latin-based except the native-script ones, which
 # union a second script onto it (see the module docstring). Scripts here are
@@ -213,9 +224,14 @@ def _script(ch: str) -> str:
     per-script lookup table to maintain: the stdlib already encodes this in
     every character's name. Digits, punctuation, and symbols
     (:data:`_SCRIPTLESS_CATEGORIES`) and unassigned/unnamed code points
-    return ``""`` — scriptless, never "foreign" to anything.
+    return ``""`` — scriptless, never "foreign" to anything — *unless* the
+    character is also East-Asian-width Wide or Fullwidth, in which case it
+    returns :data:`_EAST_ASIAN_WIDE_SCRIPT` instead (see that constant).
     """
-    if unicodedata.category(ch) in _SCRIPTLESS_CATEGORIES:
+    cat = unicodedata.category(ch)
+    if cat in _SCRIPTLESS_CATEGORIES:
+        if unicodedata.east_asian_width(ch) in _EAST_ASIAN_WIDE_WIDTHS:
+            return _EAST_ASIAN_WIDE_SCRIPT
         return ""
     try:
         name = unicodedata.name(ch)

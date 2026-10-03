@@ -148,6 +148,22 @@ def test_profile_prefers_same_script_remainder_over_louder_foreign_noise() -> No
     assert "の" not in model.alphabet.chars
 
 
+def test_profile_prefers_real_punctuation_over_east_asian_wide_punctuation() -> None:
+    """Round-4 regression: round 3's fix caught foreign *letters* but not
+    foreign *punctuation* sharing an ASCII-punctuation Unicode category —
+    IDEOGRAPHIC FULL STOP must no longer out-rank '?' for a remainder slot."""
+    from omen.profiles import floor_chars
+
+    floor_only = "".join(floor_chars("en"))
+    corpus = [floor_only] + ["?"] * 3 + ["。"] * 50  # 。, intentionally louder
+    model = ModelTrainer(
+        TrainingOptions(profile="en", alphabet_size=63, min_symbol_slots=1, max_length=62)
+    ).train(lambda: iter(corpus))
+
+    assert "?" in model.alphabet.chars
+    assert "。" not in model.alphabet.chars
+
+
 def test_alphabet_selection_is_exposed_after_auto_selection() -> None:
     trainer = ModelTrainer(TrainingOptions(ngram=2, alphabet_size=3, max_length=5))
     trainer.train(lambda: iter(["abc", "aab", "bca"]))
