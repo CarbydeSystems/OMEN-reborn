@@ -44,6 +44,12 @@ CorpusFactory = Callable[[], Iterable[str]]
 # so _resolve_max_length falls back to the mean+std estimate alone.
 MIN_SAMPLES_FOR_PERCENTILE = 30
 
+# Defaults for the two auto-max_length estimates (see TrainingOptions) —
+# named so cli.py's argparse defaults can reference the same numbers
+# instead of duplicating them.
+DEFAULT_MAX_LENGTH_STD = 1.5
+DEFAULT_MAX_LENGTH_PERCENTILE = 0.995
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingOptions:
@@ -80,8 +86,8 @@ class TrainingOptions:
     levels: int = 11
     smoothing: float = 0.01
     max_length: int | None = None
-    max_length_std: float = 1.5
-    max_length_percentile: float = 0.995
+    max_length_std: float = DEFAULT_MAX_LENGTH_STD
+    max_length_percentile: float = DEFAULT_MAX_LENGTH_PERCENTILE
     alphabet: str | None = None
     alphabet_size: int = 72
     min_symbol_slots: int = DEFAULT_MIN_SYMBOL_SLOTS
@@ -179,11 +185,12 @@ class ModelTrainer:
     def _resolve_max_length(self, alphabet: Alphabet, corpus_factory: CorpusFactory) -> int:
         """Return the configured ``max_length``, or compute it from the corpus.
 
-        Computed over the lengths of passwords the alphabet can represent
-        (mirrors what :class:`_Counts` itself measures) as the larger of a
-        mean+stdev estimate and a percentile estimate — see
-        :class:`TrainingOptions` for why both — then clamped to stay
-        trainable. ``statistics.pstdev`` (population, not sample) is
+        Computed over the lengths of passwords the alphabet can represent —
+        same ``encode()`` test :class:`_Counts` uses, though without its
+        ``ctx_len``/``max_length`` bounds filtering, which would be circular
+        here — as the larger of a mean+stdev estimate and a percentile
+        estimate (see :class:`TrainingOptions` for why both), then clamped
+        to stay trainable. ``statistics.pstdev`` (population, not sample) is
         deliberate: this is a statistic over *this* corpus, not an inference
         about a wider one.
         """

@@ -1,16 +1,18 @@
 # OMEN-reborn
 
-A clean-room **Ordered Markov ENumerator** for probability-ranked password
-candidate generation, written in modern, dependency-free Python.
+OMEN-reborn is a clean-room **Ordered Markov ENumerator**. It generates
+password candidates, ranked by probability. It is modern, dependency-free
+Python.
 
-OMEN builds an order-`n` Markov model from a corpus of (cracked) passwords and
-streams candidate guesses in (approximately) descending probability order. That
+OMEN builds an order-`n` Markov model from a corpus of cracked passwords. It
+streams candidate guesses in approximately descending probability order. That
 ordering is the whole point: a back-end like hashcat tries the most likely
-passwords first, so it cracks more for the same number of guesses.
+passwords first. It cracks more passwords for the same number of guesses.
 
-This is an **independent implementation written from the published algorithm**
-(Dürmuth et al., *OMEN: Faster Password Guessing Using an Ordered Markov
-Enumerator*, ESSoS 2015). No code from the original RUB-SysSec OMEN is used.
+This is an **independent implementation, written from the published
+algorithm** (Dürmuth et al., *OMEN: Faster Password Guessing Using an Ordered
+Markov Enumerator*, ESSoS 2015). No code from the original RUB-SysSec OMEN is
+used.
 
 ## Benchmark: OMEN vs. PRINCE
 
@@ -29,28 +31,35 @@ of the number of guesses.
 | PRINCE (top-100k) | 1.7% |
 | rockyou wordlist (replay) | 0.0% |
 
-OMEN cracks **~4× more** than the best PRINCE configuration at the same guess
-budget, because it generates novel character sequences from a Markov model
-rather than recombining existing words. The wordlist baseline sits at exactly
-**0.0%** — replaying training words cracks nothing on a disjoint test set, which
-confirms there is no train/test leakage and that every OMEN crack is genuine
-generalisation. (PRINCE's real strengths — no training, direct hashcat
-pipelining, no alphabet/length limits — are operational, not ordering quality.)
+OMEN cracks **~4× more** than the best PRINCE configuration, at the same
+guess budget. The reason: OMEN generates new character sequences from a
+Markov model. PRINCE only recombines existing words.
+
+The wordlist baseline sits at exactly **0.0%**. Replaying training words
+cracks nothing on a disjoint test set. This confirms two things: there is no
+train/test leakage, and every OMEN crack is genuine generalisation.
+
+PRINCE still has real strengths — no training needed, direct hashcat
+pipelining, no alphabet or length limits. Those strengths are about
+operation, not about guess ordering.
 
 Full methodology and a one-command reproduction are in
 [`benchmarks/`](benchmarks/README.md).
 
 ## Why a rewrite
 
-The original C implementation is unmaintained and crashes on modern glibc, the
-old `py-omen` requires Python 3.6, and the algorithm's reference behaviour is
-hard to reproduce. Rather than patch dead C, this project re-derives the
-algorithm cleanly with:
+Three problems made the old code hard to build on. The original C
+implementation is unmaintained, and it crashes on modern glibc. The old
+`py-omen` needs Python 3.6. The algorithm's reference behaviour is hard to
+reproduce from either one.
 
-- a single, well-defined level model shared across all tables,
-- length modelled as a first-class term in the ordering (common lengths rank
-  earlier — not just within a fixed length),
-- untrusted-input hardening on every model load, and
+This project does not patch the old C code. It re-derives the algorithm
+cleanly instead, with:
+
+- a single, well-defined level model, shared across all tables,
+- length as a first-class term in the ordering (common lengths rank earlier —
+  not just within one fixed length),
+- hardening against untrusted input on every model load, and
 - full type hints, `mypy --strict`, `ruff`, and a pytest suite.
 
 ## Install
@@ -103,28 +112,33 @@ omen alphabet -i cracked.txt --size 72 --profile de
 
 ## How it works
 
-Each conditional probability is discretised into an integer **level**
-(0 = most probable, `NL-1` = least), via `level(p) = round(-ln p / lam)`. A
-candidate's **total level** is the sum of its components:
+OMEN turns each conditional probability into an integer **level**. Level 0 is
+the most probable; level `NL-1` is the least. The formula is
+`level(p) = round(-ln p / lam)`.
+
+A candidate's **total level** is the sum of its components:
 
 ```
 total = IP(initial n-1 gram) + Σ CP(transition) + EP(ending) + LN(length)
 ```
 
-The enumerator walks `total = 0, 1, 2, …` and emits *every* candidate at the
-current total before advancing, so the output stream is globally non-decreasing
-in level. A single `LevelScale` is shared by all tables so the components are
-additive and comparable. `omen eval` recomputes this exact value, so a
-password's score always equals the level the generator would emit it at.
+The enumerator walks `total = 0, 1, 2, …`. At each total, it emits *every*
+candidate with that total before moving to the next. This makes the output
+stream globally non-decreasing in level.
+
+One `LevelScale` is shared by all tables. This keeps every component
+additive and comparable. `omen eval` recomputes the same total-level value,
+so a password's score always equals the level the generator would emit it
+at.
 
 ## Language profiles
 
 `omen train` picks the alphabet's characters by corpus frequency. On a small
 or noisy corpus, this can drop a base letter of the target language. A real
 case: a 72-character English alphabet lost uppercase `Q`, `J`, and `X`. One
-Japanese character in the training data was slightly more frequent, so it
-took a letter's place. Every password with that letter became unrankable —
-not ranked low, excluded completely.
+Japanese character in the training data was slightly more frequent. It took
+a letter's place. Every password with that letter became unrankable — not
+ranked low, excluded completely.
 
 A language profile stops this. It reserves a floor: a set of characters that
 always get a place in the alphabet, no matter how often they appear in the
@@ -136,73 +150,79 @@ omen alphabet -i cracked.txt --profile es   # preview only, no training
 ```
 
 Every profile's floor starts with the 62-character Latin base (`a-z A-Z
-0-9`). Most profiles add a small set of their own letters on top — German
-adds `ä ö ü ß` and their capitals, French adds `é è ê ç` and more, and so on
-for 14 languages. Four profiles (`ru`, `bg`, `el`, `el-polytonic`) add a full
-second alphabet instead of a few letters — Cyrillic or Greek. Their floor is
-larger than the default `--alphabet-size` of 72, on purpose: if you request
-one of these profiles at the default size, `train` stops with a clear error
-and tells you the size to use instead. This is correct behaviour, not a bug
-to work around — a Cyrillic password needs room for Cyrillic letters.
+0-9`). Most profiles add a small set of their own letters on top. German
+adds `ä ö ü ß` and their capitals. French adds `é è ê ç` and more. 14
+languages work this way.
+
+Four profiles are different: `ru`, `bg`, `el`, and `el-polytonic`. Each adds
+a full second alphabet — Cyrillic or Greek — instead of a few letters. Their
+floor is larger than the default `--alphabet-size` of 72, on purpose. If you
+request one of these profiles at the default size, `train` stops with a
+clear error. The error tells you the size to use instead. This is correct
+behaviour, not a bug to work around: a Cyrillic password needs room for
+Cyrillic letters.
 
 A floor can use up most of `--alphabet-size`. The German floor alone is 70
-characters — out of a default size of 72, that leaves only 2 slots for
-everything else: punctuation included. `train` and `alphabet` raise the size
-automatically when this happens, so at least `--min-symbol-slots` (default:
-14) stay free for non-floor characters on top of the floor:
+characters. Out of a default size of 72, that leaves only 2 slots for
+everything else, punctuation included. `train` and `alphabet` raise the size
+automatically when this happens. At least `--min-symbol-slots` (default: 14)
+stay free for non-floor characters, on top of the floor:
 
 ```
 omen: alphabet size auto-raised 72 -> 84 (70 profile floor + 14 symbol headroom)
 ```
 
-The floor data comes from hashcat's own `charsets/combined/*.hcchr` files —
-character sets already used across the password-cracking community. `omen`
-does not read these files. The letters are copied once into
-`omen/profiles.py`, so `omen` has no dependency on hashcat being installed.
+The floor data comes from hashcat's own `charsets/combined/*.hcchr` files.
+These character sets are already in wide use across the password-cracking
+community. `omen` does not read these files at run time. The letters are
+copied once into `omen/profiles.py`. This way, `omen` has no dependency on
+hashcat being installed.
 
-A floor only protects a profile's own letters. The slots left over are still
-filled by plain frequency — and plain frequency has no notion of script. A
-large foreign-language sample mixed into the corpus (a multi-language breach
-compilation, say) could still win one of those slots over a legitimate
-symbol from the profile's own script: the same failure mode a floor exists
-to prevent, just one layer further out — a real case found `?` losing out to
-two Japanese punctuation marks this way, in a corpus where the floor fix
-alone had already recovered `Q`/`J`/`X`. With `--profile` set, `train` and
-`alphabet` now fill the leftover slots from same-script-or-scriptless
-characters first, and only draw from foreign-script ones if that pool runs
-out.
+A floor only protects a profile's own letters. The slots left over are
+still filled by plain frequency, and plain frequency has no notion of
+script. A large foreign-language sample mixed into the corpus — a
+multi-language breach compilation, say — could still win one of those slots
+over a legitimate symbol from the profile's own script. This is the same
+failure mode a floor exists to prevent, just one layer further out.
+
+A real case found this: `?` lost out to two Japanese punctuation marks this
+way. This happened in a corpus where the floor fix alone had already
+recovered `Q`/`J`/`X`. With `--profile` set, `train` and `alphabet` now fill
+the leftover slots from same-script-or-scriptless characters first. They
+only draw from foreign-script characters if that pool runs out.
 
 `train` and `alphabet` both print a warning when something still looks
 wrong, whether or not you gave a profile:
 
 - **Always**: a warning if the corpus has fewer distinct characters than
-  `--alphabet-size`/`--size` asked for — the alphabet comes out smaller than
-  requested, silently, unless something says so.
+  `--alphabet-size`/`--size` asked for. Without this warning, the alphabet
+  would come out smaller than requested with no explanation.
 - **With a profile**: a warning if any floor letter did not make it into the
-  alphabet (should not happen through normal training — a safety check for
-  an alphabet built another way), or if a trained character falls outside
-  the profile's own script.
-- **Without a profile**: `omen` finds the alphabet's own most common script
-  and warns about any character outside it. This is the check that would
-  have caught the real `Q`/`J`/`X` case above, even with no profile named at
-  all.
-- **Either way**, if a foreign-script character still made the alphabet,
+  alphabet. This should not happen through normal training — it is a safety
+  check for an alphabet built another way. Also a warning if a trained
+  character falls outside the profile's own script.
+- **Without a profile**: `omen` finds the alphabet's own most common script.
+  It warns about any character outside that script. This is the check that
+  would have caught the real `Q`/`J`/`X` case above, even with no profile
+  named at all.
+- **Either way**: if a foreign-script character still made the alphabet,
   `omen` also names the highest-ranked same-script character that was
-  excluded instead — a concrete "here's what you're missing," not just
-  "something's wrong."
+  excluded instead. This gives a concrete "here's what you're missing," not
+  just "something's wrong."
 
 `omen inspect` prints the first two checks for any saved model, including
 one trained in an earlier session — the model file remembers which profile
-(if any) was used. The last one needs the corpus's own character frequency,
-which a saved model doesn't keep, so it only runs right after training or
-from `omen alphabet`, not from `inspect`.
+(if any) was used. The last check needs the corpus's own character
+frequency. A saved model doesn't keep that frequency data. So this check
+only runs right after training, or from `omen alphabet` — not from
+`inspect`.
 
 A corpus can also contain a different kind of noise: text that failed to
 decode cleanly. `omen` reads training files as UTF-8. A byte sequence that
-isn't valid UTF-8 decodes to U+FFFD, the Unicode replacement character — and
-an alphabet built by raw frequency could seat it like any other character.
-`omen` drops any line containing U+FFFD before counting characters, so a
-decode error can never win an alphabet slot.
+isn't valid UTF-8 decodes to U+FFFD, the Unicode replacement character. An
+alphabet built by raw frequency could seat that replacement character like
+any other. `omen` drops any line containing U+FFFD before it counts
+characters. This way, a decode error can never win an alphabet slot.
 
 ## Password length
 
@@ -219,21 +239,23 @@ it from the corpus itself, as the larger of two estimates:
 - the length covering `--max-length-percentile` of the corpus (default:
   0.995, the 99.5th percentile).
 
-The first estimate alone can undershoot on a corpus whose lengths cluster
-very tightly: a long tail can sit many standard deviations out even though
-it's only a few characters longer in absolute terms, so a small `std`
-multiplier never reaches it. The percentile estimate catches that tail
-directly, in terms of how much of the corpus it actually covers, rather than
-how far it sits from the mean. On fewer than 30 passwords a percentile is
-noise, not signal, so training falls back to the mean+std estimate alone.
-Pass `--max-length` yourself to set a fixed value instead of either.
+The first estimate alone can undershoot a corpus whose lengths cluster very
+tightly. A long tail can sit many standard deviations out, even when it is
+only a few characters longer in absolute terms. A small `std` multiplier
+never reaches a tail like that.
 
-Raising the limit costs little at training time — the length table is small
-and grows linearly, not with the alphabet. The real cost shows up later, at
-generation time: every longer candidate takes more steps to produce, and
-uses more of a fixed chunk-size budget when feeding a cracker like hashcat.
-Re-measure generation speed after a large `--max-length` increase, the same
-way you would after changing the alphabet size.
+The percentile estimate catches that tail directly. It measures how much of
+the corpus is actually covered, not how far a length sits from the mean. On
+fewer than 30 passwords, a percentile is noise, not signal — training falls
+back to the mean+std estimate alone in that case. Pass `--max-length`
+yourself to set a fixed value instead of either estimate.
+
+Raising the limit costs little at training time. The length table is small,
+and it grows linearly, not with the alphabet. The real cost shows up later,
+at generation time. Every longer candidate takes more steps to produce. Each
+one also uses more of a fixed chunk-size budget when feeding a cracker like
+hashcat. Re-measure generation speed after a large `--max-length` increase —
+the same way you would after changing the alphabet size.
 
 ## Model format
 
@@ -248,18 +270,20 @@ A model is a directory:
 - `manifest.bin` — fixed-layout little-endian header (ngram, levels, `lam`,
   alphabet, length levels) for the C enumerator, so it never parses JSON.
 
-Dense tables are `A^n` entries (`A` = alphabet size). Memory grows fast with
-`n`: at `A≈72`, `n=3` is ~370 KB and `n=4` is ~27 MB; `n=5` (~2 GiB) is
-**blocked by default**. To unlock it on a machine with sufficient RAM and a
-large corpus (250M+ passwords for good context coverage), raise one constant in
-`omen/model.py`:
+Dense tables have `A^n` entries, where `A` is the alphabet size. Memory
+grows fast with `n`. At `A≈72`, `n=3` takes ~370 KB and `n=4` takes ~27 MB.
+`n=5` would take ~2 GiB, so it is **blocked by default**.
+
+To unlock `n=5`, raise one constant in `omen/model.py`:
 
 ```python
 MAX_TABLE_ENTRIES = 1 << 31   # was 1 << 28 (256 MiB default)
 ```
 
-Keep the alphabet reduced (the default auto-selects the 72 most frequent
-characters) and prefer `n=3` or `n=4` for most use cases.
+Only do this on a machine with enough RAM, and with a large corpus — 250M+
+passwords, for good context coverage. For most use cases, keep the alphabet
+reduced (the default auto-selects the 72 most frequent characters) and
+prefer `n=3` or `n=4`.
 
 ## Architecture
 
@@ -278,30 +302,33 @@ characters) and prefer `n=3` or `n=4` for most use cases.
 
 ## Performance: native enumerator + chunked feeding
 
-The pure-Python `PyEnumerator` emits ~10⁵ candidates/s — fine for analysis, too
-slow to feed a fast GPU back-end. Two pieces close the gap:
+The pure-Python `PyEnumerator` emits ~10⁵ candidates/s. That's fine for
+analysis, but too slow to feed a fast GPU back-end. Two pieces close the
+gap:
 
 ### Native C enumerator (`native/omen-enum`)
 
-A standalone C program that reads the same model directory (`mmap`s the level
-tables, reads `manifest.bin`) and streams candidates **byte-for-byte identical**
-to `PyEnumerator`, **~50–100× faster** (≈5–10M candidates/s, host-dependent;
-parity verified by `tests/test_native_parity.py`). Build and use it as a drop-in
-producer:
+This is a standalone C program. It reads the same model directory — it
+`mmap`s the level tables and reads `manifest.bin`. It streams candidates
+**byte-for-byte identical** to `PyEnumerator`, **~50–100× faster** (about
+5–10M candidates/s, host-dependent). `tests/test_native_parity.py` verifies
+the parity. Build it and use it as a drop-in producer:
 
 ```bash
 make -C native                      # produces native/omen-enum
 native/omen-enum model/ --max-guesses 50000000 | hashcat -a 0 -m 1000 hashes.txt
 ```
 
-It mirrors the Python flags (`--max-guesses/--max-level/--min-length/--max-length`).
+It mirrors the Python flags: `--max-guesses`, `--max-level`, `--min-length`,
+`--max-length`.
 
-**Portability.** `omen-enum` is **POSIX-only** (it uses `mmap`/`unistd`) and builds
-on Linux and macOS. On Windows — or any host without a C compiler — use the
-pure-Python enumerator instead, invoked as `python -m omen generate …` (a bare
-`omen` shebang script is not directly executable on Windows; the `omen` console
-script exists only after `pip install`). Both enumerators emit byte-identical
-ordering, so a model trained once works with either.
+**Portability.** `omen-enum` is **POSIX-only** — it uses `mmap` and
+`unistd`. It builds on Linux and macOS. On Windows, or on any host without a
+C compiler, use the pure-Python enumerator instead: `python -m omen
+generate …`. (A bare `omen` shebang script does not run directly on
+Windows. The `omen` console script only exists after `pip install`.) Both
+enumerators emit byte-identical ordering, so a model trained once works with
+either.
 
 ### Native C rank estimator (`native/omen-rank`)
 
@@ -344,30 +371,38 @@ path.
 
 ### Chunked spool-and-attack (`omen spool`)
 
-Piping into hashcat over stdin caps throughput — hashcat can't `mmap` a pipe,
-loses its wordlist amplifier, and stalls on backpressure (the "fast burst, then
-~300 MH/s" effect). A FIFO doesn't help either: hashcat `mmap`s its wordlist, and
-a FIFO isn't seekable. The fix is a **RAM-backed file hashcat *can* `mmap`**:
-spool the producer into bounded tmpfs (`/dev/shm`) chunk files and attack each,
-**double-buffered** (fill chunk N+1 while attacking chunk N):
+Piping into hashcat over stdin caps throughput. hashcat can't `mmap` a pipe.
+It loses its wordlist amplifier. It stalls on backpressure — the "fast
+burst, then ~300 MH/s" effect.
+
+A FIFO doesn't help either. hashcat `mmap`s its wordlist, and a FIFO isn't
+seekable.
+
+The fix is a **RAM-backed file hashcat *can* `mmap`**. `omen spool` spools
+the producer into bounded tmpfs (`/dev/shm`) chunk files, and attacks each
+one. It is **double-buffered**: it fills chunk N+1 while attacking chunk N.
 
 ```bash
 omen spool --hashcat "hashcat -a 0 -m 1000 {chunk} hashes.txt" --chunk-mb 512 \
            -- native/omen-enum model/
 ```
 
-**Sizing `--chunk-mb`.** Each chunk is a *fresh* hashcat process — device init and
-kernel-cache build cost a few seconds per launch. On a fast GPU a small chunk drains
-in ~1–2 s and that per-chunk startup dominates, so **prefer large chunks** (GB-range
-`--chunk-mb`) to amortize it. The bound is RAM: the double-buffer keeps ~2 chunks
-resident, so budget ~2× the chunk size. Rule of thumb — size a chunk to give each
-hashcat invocation tens of seconds to a few minutes of work.
+**Sizing `--chunk-mb`.** Each chunk starts a *fresh* hashcat process. Device
+init and kernel-cache build cost a few seconds per launch. On a fast GPU, a
+small chunk drains in ~1–2 s — at that size, the per-chunk startup cost
+dominates. So **prefer large chunks** (GB-range `--chunk-mb`), to amortise
+that cost.
 
-**Throughput reality check.** A *raw, ruleless* feed against a fast hash (NTLM)
-is bound by the candidate rate — each candidate is one hash — so the C enumerator
-is the lever there. The chunked-file win is largest for **amplified** attacks
-(base list × `-r` rules on the GPU) and **slow hashes**, where mmap feeding keeps
-the GPU saturated instead of starving it on stdin.
+The bound is RAM. The double-buffer keeps ~2 chunks resident, so budget ~2×
+the chunk size. Rule of thumb: size a chunk to give each hashcat invocation
+tens of seconds to a few minutes of work.
+
+**Throughput reality check.** A *raw, ruleless* feed against a fast hash
+(NTLM) is bound by the candidate rate — each candidate is one hash. The C
+enumerator is the lever there, not chunking. The chunked-file win is
+largest for two cases instead: **amplified** attacks (a base list times
+`-r` rules on the GPU), and **slow hashes**. In both cases, mmap feeding
+keeps the GPU saturated, instead of starving it on stdin.
 
 ## Development
 

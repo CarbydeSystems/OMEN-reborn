@@ -11,19 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Script-aware remainder selection: with `--profile` set, `select_alphabet`
+- Script-aware remainder selection. With `--profile` set, `select_alphabet`
   now fills the non-floor alphabet slots from same-script-or-scriptless
-  characters first, only drawing from foreign-script ones if that pool runs
-  out — a large foreign-language corpus sample could otherwise still win a
-  remainder slot over a legitimate same-script symbol, the same failure
-  mode the floor (1.1.0) already prevents for letters, just one layer
-  further out. Found live: `?` losing to two Japanese punctuation marks in
-  a corpus where the floor fix had already recovered `Q`/`J`/`X`.
-- Near-miss reporting: `alphabet_warnings()` now also names the
+  characters first. It only draws from foreign-script characters if that
+  pool runs out. Without this, a large foreign-language corpus sample
+  could still win a remainder slot over a legitimate same-script symbol —
+  the same failure mode the floor (1.1.0) already prevents for letters,
+  just one layer further out. Found live: `?` lost to two Japanese
+  punctuation marks in a corpus where the floor fix had already recovered
+  `Q`/`J`/`X`.
+- Near-miss reporting. `alphabet_warnings()` now also names the
   highest-ranked same-script character that was excluded, whenever a
-  foreign-script character still made the alphabet. Available from `train`
-  and `alphabet` (which have the corpus's character frequencies to hand);
-  not from `inspect`, since a saved model doesn't keep them.
+  foreign-script character still made the alphabet. Available from
+  `train` and `alphabet`, which have the corpus's character frequencies
+  to hand. Not available from `inspect`, since a saved model doesn't keep
+  them.
+
+### Changed
+
+- README rewritten in Simplified Technical English (STE100), end to end,
+  for clarity.
 
 ## [1.2.0] - 2026-10-02
 

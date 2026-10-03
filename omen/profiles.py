@@ -251,6 +251,21 @@ def _best_excluded_match(
     return max(matches, key=lambda kv: kv[1], default=None)
 
 
+def _append_near_miss_warning(
+    warnings: list[str],
+    excluded: list[tuple[str, int]],
+    is_expected: Callable[[str], bool],
+    explanation: str,
+) -> None:
+    """Append a near-miss warning naming the best excluded match, if any."""
+    best = _best_excluded_match(excluded, is_expected)
+    if best is not None:
+        ch, n = best
+        warnings.append(
+            f"the highest-ranked excluded character was {ch!r} (count={n}) — {explanation}"
+        )
+
+
 def alphabet_warnings(
     chars: Iterable[str],
     profile: str | None,
@@ -309,16 +324,15 @@ def alphabet_warnings(
                 f"{profile!r}'s expected script(s) ({'/'.join(sorted(allowed))}): "
                 f"{''.join(foreign)}"
             )
-            best = _best_excluded_match(excluded, lambda ch: is_expected_script(ch, profile))
-            if best is not None:
-                ch, n = best
-                warnings.append(
-                    f"the highest-ranked excluded character was {ch!r} (count={n}) "
-                    "— an expected-script candidate was excluded while a "
-                    "foreign-script one was kept; select_alphabet's own "
-                    "script-aware remainder selection prevents this when it ran, "
-                    "so this alphabet likely wasn't built through it"
-                )
+            _append_near_miss_warning(
+                warnings,
+                excluded,
+                lambda ch: is_expected_script(ch, profile),
+                "an expected-script candidate was excluded while a "
+                "foreign-script one was kept; select_alphabet's own "
+                "script-aware remainder selection prevents this when it ran, "
+                "so this alphabet likely wasn't built through it",
+            )
         return warnings
 
     dominant = detect_dominant_script(chars)
@@ -329,12 +343,10 @@ def alphabet_warnings(
                 f"alphabet looks mixed-script (dominant: {dominant}, no --profile "
                 f"given); {len(foreign)} character(s) look foreign: {''.join(foreign)}"
             )
-            best = _best_excluded_match(excluded, lambda ch: _script(ch) in (dominant, ""))
-            if best is not None:
-                ch, n = best
-                warnings.append(
-                    f"the highest-ranked excluded character was {ch!r} (count={n}) "
-                    "— training with --profile enables script-aware selection, "
-                    "which may recover it"
-                )
+            _append_near_miss_warning(
+                warnings,
+                excluded,
+                lambda ch: _script(ch) in (dominant, ""),
+                "training with --profile enables script-aware selection, which may recover it",
+            )
     return warnings
